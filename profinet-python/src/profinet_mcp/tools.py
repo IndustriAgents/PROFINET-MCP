@@ -24,7 +24,6 @@ from .backends import BackendUnavailable, DeviceRejected, RateLimited
 from .config import ProfinetConfig
 from .gsd_parser import GSDMLError, GSDParser
 from .pn_client import (
-    CONFIG_CMDS_DISABLED,
     WRITES_DISABLED,
     BackendNotConfigured,
     OperationNotImplemented,
@@ -32,6 +31,7 @@ from .pn_client import (
     OutcomeUnknown,
     ProfinetClient,
     ProfinetClientError,
+    config_cmds_refusal,
 )
 
 log = logging.getLogger(__name__)
@@ -327,12 +327,12 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
     async def identify_device(device_mac: DeviceMac, duration_s: IdentifySeconds = 5) -> Envelope:
         """Make a device flash its identification LED (DCP Set Signal) so it can be found in the cabinet.
 
-        A DCP configuration command: refused unless PROFINET_CONFIG_CMDS_ENABLED=true, like
-        set_device_name. Supported by the mock backend. The network backend does not implement DCP Set
-        and returns success=false without sending anything.
+        A DCP configuration command: refused unless both PROFINET_WRITES_ENABLED=true and
+        PROFINET_CONFIG_CMDS_ENABLED=true, like set_device_name. Supported by the mock backend. The
+        network backend does not implement DCP Set and returns success=false without sending anything.
         """
-        if not config.config_cmds_enabled:
-            raise OperationRefused(CONFIG_CMDS_DISABLED)
+        if refusal := config_cmds_refusal(config):
+            raise OperationRefused(refusal)
         mac = validation.mac_address(device_mac)
         result, meta = await client.identify_device(mac, duration_s)
         return ok("identify_device", result, meta)
@@ -341,13 +341,14 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
     async def set_device_name(device_mac: DeviceMac, name: StationName) -> Envelope:
         """Assign a new station name (DCP Set NameOfStation) to the device with this MAC address.
 
-        Refused unless PROFINET_CONFIG_CMDS_ENABLED=true: renaming a device in a running plant takes it
-        away from the IO controller that expects it. The name must follow the PROFINET rules (lowercase
-        a-z, 0-9, '-', dot-separated labels of 1-63 characters, at most 240 in total). Supported by the
-        mock backend; the network backend returns success=false without sending anything.
+        Refused unless both PROFINET_WRITES_ENABLED=true and PROFINET_CONFIG_CMDS_ENABLED=true:
+        renaming a device in a running plant takes it away from the IO controller that expects it.
+        The name must follow the PROFINET rules (lowercase a-z, 0-9, '-', dot-separated labels of
+        1-63 characters, at most 240 in total). Supported by the mock backend; the network backend
+        returns success=false without sending anything.
         """
-        if not config.config_cmds_enabled:
-            raise OperationRefused(CONFIG_CMDS_DISABLED)
+        if refusal := config_cmds_refusal(config):
+            raise OperationRefused(refusal)
         mac = validation.mac_address(device_mac)
         new_name = validation.station_name(name)
         result, meta = await client.set_device_name(mac, new_name)
@@ -362,12 +363,12 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
     ) -> Envelope:
         """Assign IP address, subnet mask and gateway (DCP Set IP) to the device with this MAC address.
 
-        Refused unless PROFINET_CONFIG_CMDS_ENABLED=true. The gateway, if given, must be inside the
-        subnet. Supported by the mock backend; the network backend returns success=false without
-        sending anything.
+        Refused unless both PROFINET_WRITES_ENABLED=true and PROFINET_CONFIG_CMDS_ENABLED=true. The
+        gateway, if given, must be inside the subnet. Supported by the mock backend; the network
+        backend returns success=false without sending anything.
         """
-        if not config.config_cmds_enabled:
-            raise OperationRefused(CONFIG_CMDS_DISABLED)
+        if refusal := config_cmds_refusal(config):
+            raise OperationRefused(refusal)
         mac = validation.mac_address(device_mac)
         ip, mask, gw = validation.ip_settings(ip_address, subnet_mask, gateway)
         result, meta = await client.set_device_ip(mac, ip, mask, gw)

@@ -21,8 +21,9 @@ configuration (environment variables, or a .env file):
   PROFINET_BACKEND              none (default) | mock | network
   PROFINET_MOCK_HOST/PORT       mock IO device address (127.0.0.1:5600)
   PROFINET_INTERFACE            Ethernet interface for DCP discovery (eth0)
-  PROFINET_WRITES_ENABLED       allow write tools (default false)
-  PROFINET_CONFIG_CMDS_ENABLED  allow set_device_name / set_device_ip (default false)
+  PROFINET_WRITES_ENABLED       allow tools that change devices (default false)
+  PROFINET_CONFIG_CMDS_ENABLED  also needed for set_device_name, set_device_ip,
+                                identify_device (default false)
   DEVICE_MAP_FILE               JSON file of device aliases
   PROFINET_GSD_PATH             directory searched by load_gsd_file
 See profinet-python/README.md for the full list.

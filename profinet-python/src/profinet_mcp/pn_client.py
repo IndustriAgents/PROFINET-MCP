@@ -22,6 +22,7 @@ from .config import ProfinetConfig
 __all__ = [
     "BackendNotConfigured",
     "BackendUnavailable",
+    "config_cmds_refusal",
     "DeviceRejected",
     "OperationNotImplemented",
     "OperationRefused",
@@ -37,10 +38,29 @@ WRITES_DISABLED = (
     "Writes are disabled, so nothing was sent. The server is read-only by default; set "
     "PROFINET_WRITES_ENABLED=true in the server's environment to allow write_io_data and write_device_by_alias."
 )
-CONFIG_CMDS_DISABLED = (
-    "DCP configuration commands are disabled, so nothing was sent. Set PROFINET_CONFIG_CMDS_ENABLED=true in the "
-    "server's environment to allow set_device_name, set_device_ip and identify_device."
-)
+CONFIG_CMD_TOOLS = "set_device_name, set_device_ip and identify_device"
+
+
+def config_cmds_refusal(config: ProfinetConfig) -> str | None:
+    """Why a DCP configuration command (DCP Set) is refused, or None if both switches are on.
+
+    These commands change a device, so they need the general write switch *and* their own switch.
+    """
+    missing = [
+        name
+        for name, enabled in (
+            ("PROFINET_WRITES_ENABLED", config.writes_enabled),
+            ("PROFINET_CONFIG_CMDS_ENABLED", config.config_cmds_enabled),
+        )
+        if not enabled
+    ]
+    if not missing:
+        return None
+    return (
+        f"DCP configuration commands are disabled, so nothing was sent. {CONFIG_CMD_TOOLS} need both "
+        f"PROFINET_WRITES_ENABLED=true and PROFINET_CONFIG_CMDS_ENABLED=true in the server's environment; "
+        f"not set: {', '.join(missing)}."
+    )
 
 
 def match_device(devices: list[dict[str, Any]], identifier: str) -> dict[str, Any] | None:
@@ -97,20 +117,20 @@ class ProfinetClient:
 
     async def identify_device(self, device_mac: str, duration_s: int) -> tuple[dict[str, Any], dict[str, Any]]:
         # DCP Set (Signal): a configuration command like set_device_name, behind the same switch.
-        if not self.config.config_cmds_enabled:
-            raise OperationRefused(CONFIG_CMDS_DISABLED)
+        if refusal := config_cmds_refusal(self.config):
+            raise OperationRefused(refusal)
         return await self._timed(self.backend.identify(device_mac, duration_s))
 
     async def set_device_name(self, device_mac: str, name: str) -> tuple[dict[str, Any], dict[str, Any]]:
-        if not self.config.config_cmds_enabled:
-            raise OperationRefused(CONFIG_CMDS_DISABLED)
+        if refusal := config_cmds_refusal(self.config):
+            raise OperationRefused(refusal)
         return await self._timed(self.backend.set_name(device_mac, name))
 
     async def set_device_ip(
         self, device_mac: str, ip_address: str, subnet_mask: str, gateway: str
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        if not self.config.config_cmds_enabled:
-            raise OperationRefused(CONFIG_CMDS_DISABLED)
+        if refusal := config_cmds_refusal(self.config):
+            raise OperationRefused(refusal)
         return await self._timed(self.backend.set_ip(device_mac, ip_address, subnet_mask, gateway))
 
     def connection_status(self) -> dict[str, Any]:

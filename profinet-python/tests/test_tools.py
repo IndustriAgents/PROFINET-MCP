@@ -143,7 +143,7 @@ async def test_every_tool_has_a_description_and_schema() -> None:
     ],
 )
 async def test_bad_arguments_are_envelopes(tool: str, arguments: dict, fragment: str) -> None:
-    server, backend = make_server(config_cmds_enabled=True)
+    server, backend = make_server(writes_enabled=True, config_cmds_enabled=True)
     result = await call(server, tool, **arguments)
     assert result["success"] is False
     assert result["error"].startswith("Invalid arguments:")
@@ -206,6 +206,41 @@ async def test_config_commands_are_refused_by_default() -> None:
     assert backend.calls == []
 
 
+CONFIG_COMMANDS = [
+    ("set_device_name", {"device_mac": MAC, "name": "new-name"}),
+    ("set_device_ip", {"device_mac": MAC, "ip_address": "10.0.0.2", "subnet_mask": "255.255.255.0"}),
+    ("identify_device", {"device_mac": MAC}),
+]
+
+
+@pytest.mark.parametrize(
+    ("switches", "missing"),
+    [
+        ({"writes_enabled": True}, "PROFINET_CONFIG_CMDS_ENABLED"),
+        ({"config_cmds_enabled": True}, "PROFINET_WRITES_ENABLED"),
+    ],
+    ids=["writes-only", "config-only"],
+)
+async def test_config_commands_need_both_switches(switches: dict, missing: str) -> None:
+    server, backend = make_server(**switches)
+    for tool, args in CONFIG_COMMANDS:
+        result = await call(server, tool, **args)
+        assert result["success"] is False, tool
+        assert f"not set: {missing}." in result["error"], result["error"]
+        assert (result["meta"]["outcome"], result["meta"]["request_sent"]) == ("not_sent", False)
+    client = ProfinetClient(ProfinetConfig(backend="mock", **switches), backend)
+    from profinet_mcp.pn_client import OperationRefused
+
+    for call_client in (
+        lambda: client.set_device_name(MAC, "new-name"),
+        lambda: client.set_device_ip(MAC, "10.0.0.2", "255.255.255.0", "0.0.0.0"),
+        lambda: client.identify_device(MAC, 5),
+    ):
+        with pytest.raises(OperationRefused, match=missing):
+            await call_client()
+    assert backend.calls == []
+
+
 async def test_client_gates_identify_too() -> None:
     """The client refuses on its own, so a caller that bypasses the tools cannot flash the LED either."""
     from profinet_mcp.pn_client import OperationRefused
@@ -242,7 +277,7 @@ async def test_enabled_writes_and_config_commands_reach_the_backend() -> None:
     [("Line1", "lowercase"), ("a_b", "may only contain"), ("port-123", "port-xyz"), ("10.0.0.1", "IP address")],
 )
 async def test_station_names_are_validated(name: str, fragment: str) -> None:
-    server, backend = make_server(config_cmds_enabled=True)
+    server, backend = make_server(writes_enabled=True, config_cmds_enabled=True)
     result = await call(server, "set_device_name", device_mac=MAC, name=name)
     assert result["success"] is False and fragment in result["error"]
     assert backend.calls == []
@@ -258,7 +293,7 @@ async def test_station_names_are_validated(name: str, fragment: str) -> None:
     ],
 )
 async def test_ip_settings_are_validated(args: dict, fragment: str) -> None:
-    server, backend = make_server(config_cmds_enabled=True)
+    server, backend = make_server(writes_enabled=True, config_cmds_enabled=True)
     result = await call(server, "set_device_ip", device_mac=MAC, **args)
     assert result["success"] is False and fragment in result["error"]
     assert backend.calls == []
@@ -268,7 +303,7 @@ async def test_ip_settings_are_validated(args: dict, fragment: str) -> None:
 
 
 async def test_read_and_discovery_tools() -> None:
-    server, backend = make_server(config_cmds_enabled=True)
+    server, backend = make_server(writes_enabled=True, config_cmds_enabled=True)
     result = await call(server, "read_io_data", device_name="line1-io", slot=1, subslot=1, data_length=3)
     assert result["success"] is True
     assert result["data"]["raw_data_hex"] == "000102" and result["data"]["bytes"] == [0, 1, 2]
@@ -302,7 +337,7 @@ async def test_backend_failures_are_envelopes() -> None:
 
 
 async def test_without_a_backend_nothing_is_invented() -> None:
-    server = ProfinetMCPServer(ProfinetConfig(config_cmds_enabled=True))
+    server = ProfinetMCPServer(ProfinetConfig(writes_enabled=True, config_cmds_enabled=True))
     for tool, args in [
         ("discover_devices", {}),
         ("get_device_info", {"device_name": "pn-device-01"}),
