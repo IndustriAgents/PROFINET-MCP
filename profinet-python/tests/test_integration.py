@@ -7,6 +7,7 @@ MCP client starts it (``python -m profinet_mcp.cli``) and driven with the MCP cl
 from __future__ import annotations
 
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -315,7 +316,6 @@ def test_stdout_carries_only_json_rpc(tmp_path: Path, mock_process: MockProcess,
 @pytest.mark.parametrize("child", ["mock", "server"])
 def test_children_exit_when_the_test_process_is_killed(tmp_path: Path, child: str) -> None:
     """Rule 11: SIGKILL the process that started the mock (or the MCP server); the child must exit too."""
-    import os
     import signal
     import textwrap
     import time
@@ -360,3 +360,13 @@ def test_children_exit_when_the_test_process_is_killed(tmp_path: Path, child: st
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+def test_mock_process_helper_dies_with_its_stdin(tmp_path: Path) -> None:
+    """The helper itself must start the mock so that losing the test process (stdin EOF) stops it."""
+    process = MockProcess(tmp_path)
+    try:
+        process.proc.stdin.close()  # what the OS does when the test process dies
+        assert process.proc.wait(timeout=float(os.environ.get("ORPHAN_TIMEOUT_S", "15"))) == 0
+    finally:
+        process.stop()
