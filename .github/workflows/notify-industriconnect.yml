@@ -12,6 +12,8 @@ permissions: {}
 
 jobs:
   notify:
+    # Forks have no business notifying IndustriConnect.
+    if: github.repository == 'IndustriAgents/PROFINET-MCP'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
