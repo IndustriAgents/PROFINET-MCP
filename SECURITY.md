@@ -54,6 +54,8 @@ application on the office network.
   call starts and checked right before every send; a change that could not
   be sent in time is reported `not_sent` and is never sent afterwards, even
   if the device becomes reachable later.
+- **A cancelled call sends nothing more.** When the client cancels a tool
+  call, a change that has not left yet is refused right before the send.
 - **A disconnected client sends nothing more.** When the MCP client goes away
   (stdin closes), changes that are still connecting or waiting to retry are
   cancelled before they are sent, and no new request starts.

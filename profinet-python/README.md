@@ -63,6 +63,11 @@ sent after it: a request that never left is `not_sent`, a change that did is
 `unknown`. There is no lock or queue in the server itself (each mock request
 uses its own connection, and the DCP rate limit refuses rather than queues).
 
+When the MCP client cancels a call (`notifications/cancelled`), a change that
+has not been sent yet is never sent: the server captures the request's cancel
+scope when the call starts and checks it right before each send, because the
+SDK only sets a flag and anyio may let the call run one more step first.
+
 When the MCP client disconnects (stdin closes), pending requests are stopped:
 one still connecting or waiting to retry is never sent (`not_sent`), one
 already sent is not repeated, no new request starts, and the server exits with

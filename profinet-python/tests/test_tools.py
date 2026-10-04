@@ -893,3 +893,128 @@ async def test_change_interrupted_mid_send_is_unknown(mock_server, monkeypatch, 
     assert result["success"] is False
     assert (result["meta"]["outcome"], result["meta"]["request_sent"]) == ("unknown", True)
     assert "may have been applied" in result["error"]
+
+
+class NoCheckpointStream:
+    """Wraps a TCP stream so that send() writes in the current loop step, without a checkpoint.
+
+    anyio's own send() happens to checkpoint first; transports that do not (threads, other stacks) rely on
+    the explicit pre-send gate alone, which is what this lets the test isolate.
+    """
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+        self.transport = inner._transport  # anyio's asyncio SocketStream; writes are queued immediately
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info) -> None:
+        await self.inner.aclose()
+
+    async def send(self, data: bytes) -> None:
+        self.transport.write(data)  # no checkpoint: written in this very loop step
+
+    async def receive(self, max_bytes: int = 65536) -> bytes:
+        return await self.inner.receive(max_bytes)
+
+    async def aclose(self) -> None:
+        await self.inner.aclose()
+
+
+async def test_cancel_in_the_same_step_as_the_connect_never_sends(monkeypatch) -> None:
+    """CANCEL RACE: the SDK sets the request scope's cancel_called synchronously, but anyio lets a task whose
+    connect just completed run one more step. The pre-send gate must read cancel_called itself."""
+    from profinet_mcp import backends
+
+    received: list[bytes] = []
+
+    async def record(stream) -> None:
+        async with stream:
+            try:
+                received.append(await stream.receive())
+            except (anyio.EndOfStream, anyio.BrokenResourceError):
+                pass
+
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    backend = backends.MockBackend("127.0.0.1", listener.extra(SocketAttribute.local_port), timeout=5, max_retries=0)
+    real_connect = anyio.connect_tcp
+    current: dict = {}
+
+    async def connect_then_cancel(*args, **kwargs):
+        stream = await real_connect(*args, **kwargs)
+        current["connects"] = current.get("connects", 0) + 1
+        current["scope"].cancel()  # like RequestResponder.cancel(): same loop step as the connect completing
+        return NoCheckpointStream(stream)
+
+    monkeypatch.setattr(anyio, "connect_tcp", connect_then_cancel)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(listener.serve, record)
+        for _ in range(60):
+            scope = anyio.CancelScope()
+            current["scope"] = scope
+            # The call ends either with ClientCancelled (not_sent) or, once asyncio delivers the pending
+            # cancellation at a later await, with the cancellation itself - which the scope absorbs, just as
+            # the SDK answers "Request cancelled". Either way nothing may reach the device.
+            with scope, backends.tool_call(cancel_scope=scope):
+                try:
+                    await backend.write_io("x", 1, 2, b"\x01")
+                except backends.ClientCancelled:
+                    pass
+        await anyio.sleep(0.3)
+        tg.cancel_scope.cancel()
+    assert current["connects"] == 60  # every iteration got as far as a live connection
+    assert received == [], f"{len(received)} write(s) reached the device after the call was cancelled"
+
+
+async def test_request_cancel_scope_is_the_sdks_and_sees_cancellation() -> None:
+    """Fails if the private mcp<2 internals we read (request_ctx, session._in_flight, _cancel_scope) move."""
+    from mcp.server.lowlevel.server import request_ctx
+    from mcp.shared.memory import create_connected_server_and_client_session
+    from mcp.types import CancelledNotification, CancelledNotificationParams, ClientNotification
+
+    from profinet_mcp import backends
+    from profinet_mcp.tools import request_cancel_scope
+
+    assert request_cancel_scope() is None  # outside a request
+    seen: dict = {}
+    reached = anyio.Event()
+
+    class WaitingBackend(RecordingBackend):
+        async def write_io(self, device, slot, subslot, data):
+            context = request_ctx.get()
+            seen["request_id"] = context.request_id
+            seen["sdk_scope"] = context.session._in_flight[context.request_id]._cancel_scope
+            seen["captured"] = backends._CALL.get().cancel_scope
+            seen["cancelled_before"] = backends.call_cancelled()
+            reached.set()
+            try:
+                await anyio.sleep(30)
+            finally:
+                seen["cancelled_after"] = backends.call_cancelled()
+            return {"written_bytes": len(data)}, {"backend": self.name}
+
+    server, _ = make_server(WaitingBackend(), writes_enabled=True)
+    async with create_connected_server_and_client_session(server.mcp) as client:
+        async with anyio.create_task_group() as tg:
+
+            async def call_write() -> None:
+                try:
+                    await client.call_tool("write_io_data", {"device_name": "x", "slot": 1, "subslot": 2, "data": [1]})
+                except Exception:  # noqa: BLE001 - the cancelled request may end with an error reply
+                    pass
+
+            tg.start_soon(call_write)
+            with anyio.fail_after(10):
+                await reached.wait()
+            notification = CancelledNotification(
+                params=CancelledNotificationParams(requestId=seen["request_id"], reason="test")
+            )
+            await client.send_notification(ClientNotification(notification))
+            with anyio.fail_after(10):
+                while "cancelled_after" not in seen:
+                    await anyio.sleep(0.01)
+            tg.cancel_scope.cancel()
+    assert isinstance(seen["captured"], anyio.CancelScope)
+    assert seen["captured"] is seen["sdk_scope"]
+    assert seen["cancelled_before"] is False and seen["cancelled_after"] is True

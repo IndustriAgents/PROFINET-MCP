@@ -30,26 +30,39 @@ MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 class _Call:
-    """One tool call: when it started and its single absolute deadline (``not_after``, monotonic)."""
+    """One tool call: when it started, its single absolute deadline (``not_after``, monotonic), and the MCP
+    request's cancel scope (whose ``cancel_called`` the pre-send gate reads)."""
 
-    __slots__ = ("started", "not_after")
+    __slots__ = ("started", "not_after", "cancel_scope")
 
-    def __init__(self) -> None:
+    def __init__(self, cancel_scope: Any | None = None) -> None:
         self.started = time.monotonic()
         self.not_after: float | None = None
+        self.cancel_scope = cancel_scope
 
 
 _CALL: ContextVar[_Call | None] = ContextVar("profinet_tool_call", default=None)
 
 
 @contextmanager
-def tool_call() -> Iterator[None]:
-    """Mark the start of a tool call (used by the tool wrapper)."""
-    token = _CALL.set(_Call())
+def tool_call(cancel_scope: Any | None = None) -> Iterator[None]:
+    """Mark the start of a tool call (used by the tool wrapper), with the MCP request's cancel scope."""
+    token = _CALL.set(_Call(cancel_scope))
     try:
         yield
     finally:
         _CALL.reset(token)
+
+
+def call_cancelled() -> bool:
+    """True once the MCP client cancelled the current tool call (a plain bool read; safe anywhere).
+
+    The SDK sets the request scope's ``cancel_called`` synchronously when notifications/cancelled
+    arrives, but anyio does not interrupt a task whose wait (e.g. a connect) has just completed - it runs
+    one more step and could send. The pre-send gate therefore reads the flag itself.
+    """
+    call = _CALL.get()
+    return bool(call is not None and getattr(call.cancel_scope, "cancel_called", False))
 
 
 def call_not_after(bound: float) -> float:
@@ -123,12 +136,20 @@ class ClientDisconnected(RequestNotSent):
     """The MCP client went away before the request was sent; nothing was sent."""
 
 
+class ClientCancelled(RequestNotSent):
+    """The MCP client cancelled the tool call before the request was sent; nothing was sent."""
+
+
 class _ClientGone(Exception):
     """Raised instead of sending once the MCP client has disconnected."""
 
 
 class _DeadlinePassed(Exception):
     """Raised instead of sending once the tool call's deadline has passed."""
+
+
+class _CallCancelled(Exception):
+    """Raised instead of sending once the MCP client has cancelled the tool call."""
 
 
 class DeviceRejected(ProfinetClientError):
@@ -314,6 +335,8 @@ class MockBackend:
             raise RequestNotSent(f"Could not encode the {op!r} request: {exc}") from exc
         if self.closing:
             raise ClientDisconnected(f"The MCP client has disconnected; the {op!r} request was not sent.")
+        if call_cancelled():
+            raise ClientCancelled(f"The MCP client cancelled the call; the {op!r} request was not sent.")
         total = self.deadline(timeout)
         not_after = call_not_after(total)  # shared by every request of this tool call
         budget = not_after - time.monotonic()
@@ -330,6 +353,10 @@ class MockBackend:
                 line = await self._exchange(op, payload, timeout, state, changes_device)
         except _ClientGone:
             pass
+        except _CallCancelled:
+            raise ClientCancelled(
+                f"The MCP client cancelled the call before the {op!r} request was sent; nothing was sent."
+            ) from None
         except _DeadlinePassed:
             raise RequestNotSent(
                 f"The {op!r} request was not sent: the tool call's deadline ({total:g} s) expired before it could "
@@ -384,6 +411,8 @@ class MockBackend:
                         raise _ClientGone
                     if time.monotonic() >= state["not_after"]:  # never send after the call's deadline
                         raise _DeadlinePassed
+                    if call_cancelled():  # cancelled in the same step the connect completed
+                        raise _CallCancelled
                     state["sent"] = True  # from here on the request may have left
                     with anyio.fail_after(timeout or self.timeout):
                         await stream.send(payload)

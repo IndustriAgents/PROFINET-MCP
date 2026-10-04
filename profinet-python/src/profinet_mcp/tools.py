@@ -22,6 +22,11 @@ from pydantic import Field, ValidationError
 
 from . import __version__, validation
 from .backends import DeviceRejected, RateLimited, RequestNotSent, tool_call
+
+try:  # private mcp<2 API (pinned in pyproject.toml); tests/test_tools.py fails if it moves
+    from mcp.server.lowlevel.server import request_ctx as _request_ctx
+except ImportError:  # pragma: no cover
+    _request_ctx = None
 from .config import ProfinetConfig
 from .gsd_parser import GSDMLError, GSDParser
 from .pn_client import (
@@ -86,6 +91,23 @@ READ = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
 # Rule 13: nothing that changes a device advertises idempotency (it would invite blind retries).
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True)
 LOCAL = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+
+
+def request_cancel_scope() -> Any | None:
+    """The MCP SDK's cancel scope for the request being handled, or None outside a request.
+
+    Read through the session's in-flight responder (``session._in_flight[request_id]._cancel_scope``), a
+    private mcp<2 API: guarded here, pinned by ``mcp<2``, and covered by a test that fails if it moves.
+    """
+    if _request_ctx is None:
+        return None
+    try:
+        context = _request_ctx.get()
+    except LookupError:
+        return None
+    in_flight = getattr(context.session, "_in_flight", None)
+    responder = in_flight.get(context.request_id) if isinstance(in_flight, dict) else None
+    return getattr(responder, "_cancel_scope", None)
 
 
 def envelope(success: bool, data: Any = None, error: str | None = None, meta: dict[str, Any] | None = None) -> Envelope:
@@ -207,7 +229,9 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> Envelope:
             try:
-                with tool_call():  # the overall deadline of every device request counts from here
+                # The overall deadline of every device request counts from here; the request's cancel scope
+                # lets the pre-send gate see a cancellation that anyio has not delivered yet.
+                with tool_call(cancel_scope=request_cancel_scope()):
                     result = await fn(*args, **kwargs)
             except validation.InvalidArgument as exc:
                 return err(tool, f"Invalid arguments: {exc}", not_sent)
