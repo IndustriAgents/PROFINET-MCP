@@ -19,6 +19,7 @@ from .backends import (
     OutcomeUnknown,
     ProfinetClientError,
     RequestNotSent,
+    call_not_after,
     create_backend,
 )
 from .config import ProfinetConfig
@@ -107,7 +108,8 @@ class ProfinetClient:
         The backend's own timeouts normally end a request first; this is the backstop so that no
         call can hang. On expiry a change is reported as possibly applied, a read as a clean error.
         """
-        deadline = self.backend.deadline(timeout) + 2.0  # behind the backend's own, more precise deadline
+        # The tool call's single absolute deadline, plus 2 s: a backstop behind the backend's own check.
+        deadline = max(call_not_after(self.backend.deadline(timeout)) + 2.0 - time.monotonic(), 0.0)
         start = time.perf_counter()
         try:
             with anyio.fail_after(deadline):

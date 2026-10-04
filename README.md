@@ -51,10 +51,13 @@ The server is **read-only by default**:
   `meta.outcome` (`written`, `rejected`, `unknown` or `not_sent`) and
   `meta.request_sent`; "rejected" is used only when the device refused the
   request before applying anything.
-- Every device request and tool call has an overall deadline (under 50 s with
-  the default settings), so no call can hang; a change that runs out of time
-  after it was sent is reported as `unknown`, one that never left as
-  `not_sent`. Tools that change a device are annotated as destructive and not
+- Every tool call has one absolute deadline (under 50 s with the default
+  settings), fixed when the call starts and shared by everything the call
+  does, including any wait to reach the device; no call can hang. A change
+  is never sent after that deadline: one that runs out of time after it was
+  sent is reported as `unknown`, one that never left as `not_sent`. This
+  matters because the MCP client SDK does not tell the server when its own
+  request times out. Tools that change a device are annotated as destructive and not
   idempotent, so clients are not invited to retry them.
 - If the MCP client disconnects (stdin closes) while a change is still
   connecting or waiting to retry, the change is cancelled and never sent; one

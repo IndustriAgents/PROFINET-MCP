@@ -52,10 +52,16 @@ Tools that change a device (`write_io_data`, `write_device_by_alias`,
 Connecting to the mock is retried (`PROFINET_MAX_RETRIES`); a read whose reply
 is lost is sent again, but a write or DCP command never is. "rejected" is used
 only when the mock marks a refusal `"rejected": true` (refused before anything
-changed); any other failure after a send is "unknown". Every request also has
-an overall deadline (all connect and reply timeouts, retries and backoff, plus
-slack: 45.5 s with the defaults), so no call can hang; when it expires, a
-request that never left is `not_sent` and a change that did is `unknown`.
+changed); any other failure after a send is "unknown".
+
+Every tool call has **one absolute deadline**, fixed when the call starts
+(all connect and reply timeouts, retries and backoff, plus slack: 45.5 s with
+the defaults) and shared by every request the call makes; it is never
+restarted per request. Waiting to reach a busy device counts against it, and
+the deadline is checked again right before each send, so a change is never
+sent after it: a request that never left is `not_sent`, a change that did is
+`unknown`. There is no lock or queue in the server itself (each mock request
+uses its own connection, and the DCP rate limit refuses rather than queues).
 
 When the MCP client disconnects (stdin closes), pending requests are stopped:
 one still connecting or waiting to retry is never sent (`not_sent`), one

@@ -21,7 +21,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field, ValidationError
 
 from . import __version__, validation
-from .backends import DeviceRejected, RateLimited, RequestNotSent
+from .backends import DeviceRejected, RateLimited, RequestNotSent, tool_call
 from .config import ProfinetConfig
 from .gsd_parser import GSDMLError, GSDParser
 from .pn_client import (
@@ -207,7 +207,8 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> Envelope:
             try:
-                result = await fn(*args, **kwargs)
+                with tool_call():  # the overall deadline of every device request counts from here
+                    result = await fn(*args, **kwargs)
             except validation.InvalidArgument as exc:
                 return err(tool, f"Invalid arguments: {exc}", not_sent)
             except RateLimited as exc:

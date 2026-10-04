@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import anyio
@@ -682,3 +683,170 @@ async def test_lookups_after_discovery_use_the_cached_answer(monkeypatch) -> Non
     assert len(transport.sent) == 1
     again = await call(server, "discover_devices", timeout=0.5)
     assert again["success"] is False and again["meta"]["refused"] is True
+
+
+class OneClientAtATimeDevice:
+    """A device that serves one connection at a time, like a PLC with a busy accept queue.
+
+    Every request is recorded with its arrival time; reads take ``busy_s`` to process. While the
+    device is busy (or other requests wait for it), new connections are not accepted.
+    """
+
+    def __init__(self, busy_s: float) -> None:
+        self.busy_s = busy_s
+        self.slot = anyio.Lock()
+        self.received: list[tuple[str, float]] = []
+        self.started = time.monotonic()
+        self.connect_attempts: list[str] = []
+
+    async def handle(self, stream) -> None:
+        async with stream, self.slot:
+            try:
+                request = json.loads(await stream.receive())
+            except (anyio.EndOfStream, anyio.BrokenResourceError, OSError):
+                return
+            self.received.append((request["op"], round(time.monotonic() - self.started, 2)))
+            await anyio.sleep(self.busy_s)
+            reply = {"success": True, "data": {"device_name": "x", "raw_data_hex": "00"}}
+            try:
+                await stream.send(json.dumps(reply).encode() + b"\n")
+            except (anyio.BrokenResourceError, anyio.ClosedResourceError, OSError):
+                pass  # the caller gave up long ago
+
+    def busy(self) -> bool:
+        return self.slot.locked() or self.slot.statistics().tasks_waiting > 0
+
+
+async def test_a_change_queued_behind_slow_calls_is_never_sent_after_its_deadline(monkeypatch) -> None:
+    """Rules 1/12: the deadline counts from the start of the tool call and covers any wait to reach the
+    device. A write whose deadline expires while it waits is not_sent, and it must never be sent later -
+    the Python MCP SDK sends no notifications/cancelled when its own client-side timeout fires."""
+    device = OneClientAtATimeDevice(busy_s=1.2)
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    port = listener.extra(SocketAttribute.local_port)
+    real_connect = anyio.connect_tcp
+
+    async def connect_when_device_is_free(host, port_, **kwargs):
+        device.connect_attempts.append("connect")
+        while device.busy():  # the device is not accepting: the caller waits, queued behind the reads
+            await anyio.sleep(0.01)
+        return await real_connect(host, port_, **kwargs)
+
+    config = ProfinetConfig(
+        backend="mock", mock_port=port, timeout=1, max_retries=0, writes_enabled=True, config_cmds_enabled=True
+    )
+    server = ProfinetMCPServer(config)
+    deadline = server.client.backend.deadline(None)
+    results: dict = {}
+
+    async def run(name: str, tool: str, arguments: dict) -> None:
+        results[name] = (await call(server, tool, **arguments), time.monotonic() - device.started)
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(listener.serve, device.handle)
+        for n in range(3):  # three slow reads occupy the device for ~3.6 s
+            tg.start_soon(
+                run, f"read{n}", "read_io_data", {"device_name": "x", "slot": 1, "subslot": 1, "data_length": 1}
+            )
+        await anyio.sleep(0.2)
+        monkeypatch.setattr(anyio, "connect_tcp", connect_when_device_is_free)
+        tg.start_soon(run, "write", "write_io_data", {"device_name": "x", "slot": 1, "subslot": 2, "data": [7]})
+        await anyio.sleep(3 * device.busy_s + 1.5)  # well past the time the device is free again
+        tg.cancel_scope.cancel()
+
+    write, finished_at = results["write"]
+    assert device.connect_attempts, "the write never tried to reach the device"
+    assert write["success"] is False
+    assert (write["meta"]["outcome"], write["meta"]["request_sent"]) == ("not_sent", False)
+    assert finished_at < 0.2 + deadline + 0.5  # answered within its own deadline
+    assert [op for op, _ in device.received].count("write") == 0, device.received  # and never sent afterwards
+    assert [op for op, _ in device.received].count("read") == 3
+
+
+async def test_deadline_already_spent_before_the_backend_is_reached() -> None:
+    """The deadline counts from the start of the tool call, not from the start of the device request."""
+    from profinet_mcp import backends
+
+    received: list[bytes] = []
+
+    async def record(stream) -> None:
+        async with stream:
+            received.append(await stream.receive())
+
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    backend = backends.MockBackend("127.0.0.1", listener.extra(SocketAttribute.local_port), timeout=1, max_retries=0)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(listener.serve, record)
+        with backends.tool_call():
+            backends._CALL.get().started -= 3600  # this tool call started an hour ago
+            with pytest.raises(backends.RequestNotSent, match="deadline .* had already expired"):
+                await backend.write_io("x", 1, 2, b"\x01")
+        await anyio.sleep(0.3)
+        tg.cancel_scope.cancel()
+    assert received == []
+
+
+async def test_one_deadline_per_tool_call_is_shared_by_all_its_requests() -> None:
+    """A second request in the same tool call gets only what is left; it is never given a fresh deadline."""
+    from profinet_mcp import backends
+
+    received: list[str] = []
+
+    async def answer(stream) -> None:
+        async with stream:
+            request = json.loads(await stream.receive())
+            received.append(request["op"])
+            await anyio.sleep(0.8)  # a slow, but in-time, reply
+            reply = {"success": True, "data": {"device_name": "x", "raw_data_hex": "00", "written_bytes": 1}}
+            await stream.send(json.dumps(reply).encode() + b"\n")
+
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    backend = backends.MockBackend("127.0.0.1", listener.extra(SocketAttribute.local_port), timeout=1, max_retries=0)
+    bound = backend.deadline(None)  # 3 s for this configuration
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(listener.serve, answer)
+        with backends.tool_call():
+            await backend.read_io("x", 1, 1, 1)  # ~0.8 s of the call's 3 s
+            not_after = backends._CALL.get().not_after
+            await anyio.sleep(bound - 0.8 + 0.2)  # more work in the same call: now past the call's deadline
+            with pytest.raises(backends.RequestNotSent, match="deadline .* had already expired"):
+                await backend.write_io("x", 1, 2, b"\x01")
+            assert backends._CALL.get().not_after == not_after  # not restarted by the second request
+        await anyio.sleep(0.3)
+        tg.cancel_scope.cancel()
+    assert received == ["read"]  # the write was never sent
+
+
+async def test_a_send_after_the_call_deadline_is_refused_as_not_sent(monkeypatch) -> None:
+    """Checked right before the send: a connection that completes after the deadline sends nothing."""
+    from profinet_mcp import backends
+
+    received: list[bytes] = []
+
+    async def record(stream) -> None:
+        async with stream:
+            try:
+                received.append(await stream.receive())
+            except anyio.EndOfStream:
+                pass
+
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    port = listener.extra(SocketAttribute.local_port)
+    backend = backends.MockBackend("127.0.0.1", port, timeout=5, max_retries=0)
+    real_connect = anyio.connect_tcp
+
+    async def slow_connect(*args, **kwargs):
+        stream = await real_connect(*args, **kwargs)
+        time.sleep(0.4)  # blocks without a checkpoint, so only the explicit pre-send check can notice
+        return stream
+
+    monkeypatch.setattr(anyio, "connect_tcp", slow_connect)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(listener.serve, record)
+        with backends.tool_call():
+            backends._CALL.get().not_after = time.monotonic() + 0.2  # this call has 0.2 s left
+            with pytest.raises(backends.RequestNotSent, match="expired before it could be sent"):
+                await backend.write_io("x", 1, 2, b"\x01")
+        await anyio.sleep(0.3)
+        tg.cancel_scope.cancel()
+    assert received == []

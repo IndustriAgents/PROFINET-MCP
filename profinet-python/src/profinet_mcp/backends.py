@@ -15,7 +15,9 @@ from __future__ import annotations
 import copy
 import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Protocol
 
 import anyio
@@ -25,6 +27,51 @@ from . import dcp
 from .config import BACKEND_MOCK, BACKEND_NETWORK, BACKEND_NONE, ProfinetConfig
 
 MAX_RESPONSE_BYTES = 1024 * 1024
+
+
+class _Call:
+    """One tool call: when it started and its single absolute deadline (``not_after``, monotonic)."""
+
+    __slots__ = ("started", "not_after")
+
+    def __init__(self) -> None:
+        self.started = time.monotonic()
+        self.not_after: float | None = None
+
+
+_CALL: ContextVar[_Call | None] = ContextVar("profinet_tool_call", default=None)
+
+
+@contextmanager
+def tool_call() -> Iterator[None]:
+    """Mark the start of a tool call (used by the tool wrapper)."""
+    token = _CALL.set(_Call())
+    try:
+        yield
+    finally:
+        _CALL.reset(token)
+
+
+def call_not_after(bound: float) -> float:
+    """The current tool call's absolute deadline (monotonic seconds).
+
+    ONE deadline per tool call: the first device request fixes it at ``start of the call + bound``, and
+    every later request in the same call shares it - it is never restarted per request. Outside a tool
+    call (direct use of the client) it is ``now + bound``.
+    """
+    call = _CALL.get()
+    if call is None:
+        return time.monotonic() + bound
+    if call.not_after is None:
+        call.not_after = call.started + bound
+    return call.not_after
+
+
+def elapsed_in_call() -> float:
+    """Seconds since the current tool call started (0 outside a tool call)."""
+    call = _CALL.get()
+    return 0.0 if call is None else max(time.monotonic() - call.started, 0.0)
+
 
 DEVICE_FIELDS = (
     "device_name",
@@ -78,6 +125,10 @@ class ClientDisconnected(RequestNotSent):
 
 class _ClientGone(Exception):
     """Raised instead of sending once the MCP client has disconnected."""
+
+
+class _DeadlinePassed(Exception):
+    """Raised instead of sending once the tool call's deadline has passed."""
 
 
 class DeviceRejected(ProfinetClientError):
@@ -263,22 +314,33 @@ class MockBackend:
             raise RequestNotSent(f"Could not encode the {op!r} request: {exc}") from exc
         if self.closing:
             raise ClientDisconnected(f"The MCP client has disconnected; the {op!r} request was not sent.")
-        state = {"sent": False}
+        total = self.deadline(timeout)
+        not_after = call_not_after(total)  # shared by every request of this tool call
+        budget = not_after - time.monotonic()
+        if budget <= 0:
+            raise RequestNotSent(
+                f"The {op!r} request was not sent: the tool call's deadline ({total:g} s) had already expired"
+            )
+        state = {"sent": False, "not_after": not_after}
         line: bytes | None = None
         scope = anyio.CancelScope()
         self._scopes.add(scope)
         try:
-            with scope, anyio.fail_after(self.deadline(timeout)):
+            with scope, anyio.fail_after(budget):
                 line = await self._exchange(op, payload, timeout, state, changes_device)
         except _ClientGone:
             pass
+        except _DeadlinePassed:
+            raise RequestNotSent(
+                f"The {op!r} request was not sent: the tool call's deadline ({total:g} s) expired before it could "
+                "be sent"
+            ) from None
         except TimeoutError:
             if changes_device and state["sent"]:
-                raise self._unknown(op, f"the {self.deadline(timeout):g} s deadline expired") from None
+                raise self._unknown(op, f"the {total:g} s deadline expired") from None
             if not state["sent"]:
                 raise RequestNotSent(
-                    f"The {op!r} request to the mock at {self.endpoint} was not sent within its "
-                    f"{self.deadline(timeout):g} s deadline"
+                    f"The {op!r} request to the mock at {self.endpoint} was not sent within its {total:g} s deadline"
                 ) from None
             raise ProfinetClientError(f"The mock at {self.endpoint} did not answer {op!r} in time") from None
         finally:
@@ -311,15 +373,17 @@ class MockBackend:
         return response.get("data")
 
     async def _exchange(
-        self, op: str, payload: bytes, timeout: float | None, state: dict[str, bool], changes_device: bool
+        self, op: str, payload: bytes, timeout: float | None, state: dict[str, Any], changes_device: bool
     ) -> bytes:
         attempts = 1 if changes_device else self.max_retries + 1
         for attempt in range(attempts):
             stream = await self._connect()  # nothing has been sent yet, so this may retry
             try:
                 async with stream:
-                    if self.closing:  # no await between this check and the send
+                    if self.closing:  # no await between these checks and the send
                         raise _ClientGone
+                    if time.monotonic() >= state["not_after"]:  # never send after the call's deadline
+                        raise _DeadlinePassed
                     state["sent"] = True  # from here on the request may have left
                     with anyio.fail_after(timeout or self.timeout):
                         await stream.send(payload)

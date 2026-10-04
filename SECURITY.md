@@ -50,6 +50,10 @@ application on the office network.
   is lost or garbled, or the overall deadline expires, the tool returns
   `success: false` with `meta.outcome: "unknown"`: the change may have been
   applied, so read the device back before trying again.
+- **Nothing is sent late.** Each tool call has one deadline, fixed when the
+  call starts and checked right before every send; a change that could not
+  be sent in time is reported `not_sent` and is never sent afterwards, even
+  if the device becomes reachable later.
 - **A disconnected client sends nothing more.** When the MCP client goes away
   (stdin closes), changes that are still connecting or waiting to retry are
   cancelled before they are sent, and no new request starts.
