@@ -34,16 +34,27 @@ The server is **read-only by default**:
   `identify_device` need both `PROFINET_WRITES_ENABLED=true` and
   `PROFINET_CONFIG_CMDS_ENABLED=true`.
 - These safety switches are read only from the real process environment (for
-  example the MCP client's `env` block) or a file passed with `--env-file`. A
-  `.env` that the server finds by itself in the working directory may set
-  connection settings, but a switch in it is ignored with a warning on stderr:
-  when a client starts the server, that directory is the client's project.
+  example the MCP client's `env` block) or a file passed with `--env-file`.
+- Without `--env-file`, the only `.env` the server reads is
+  `profinet-python/.env` in a source checkout (located from the package
+  itself). A `.env` in the working directory or any parent is never read:
+  when a client starts the server, that directory is the client's project,
+  which may not be trusted, and settings such as the mock address or the
+  device map decide where a write goes. An installed package reads no `.env`
+  at all. Even `profinet-python/.env` may set only `PROFINET_*` settings and
+  `DEVICE_MAP_FILE`, never a safety switch; anything else is ignored with a
+  warning on stderr (keys are compared case-insensitively).
 - A refused call sends nothing, and a change is sent **at most once**: if the
   reply to a write or DCP command is lost, the server does not retry; it
   returns `success: false` with `meta.outcome: "unknown"` and an error saying
   the change may have been applied. Every device-changing tool reports
   `meta.outcome` (`written`, `rejected`, `unknown` or `not_sent`) and
-  `meta.request_sent`.
+  `meta.request_sent`; "rejected" is used only when the device refused the
+  request before applying anything.
+- Every device request and tool call has an overall deadline, so no call can
+  hang; a change that runs out of time is reported as `unknown`. Tools that
+  change a device are annotated as destructive and not idempotent, so clients
+  are not invited to retry them.
 
 ### Known issues and limitations
 
@@ -63,8 +74,14 @@ The server is **read-only by default**:
   `CAP_NET_RAW` on Linux, `/dev/bpf*` access on macOS). Reports from real
   networks are welcome.
 - Discovery on the `network` backend sends at most one DCP Identify All every
-  2 seconds; calls that come sooner are refused (`meta.retry_after_s`) so a
-  model cannot flood the network.
+  2 seconds so a model cannot flood the network. `discover_devices` calls that
+  come sooner are refused (`meta.retry_after_s`); `get_device_info` and
+  `test_device_communication` reuse the last answer instead
+  (`meta.cached: true`, `meta.age_s`).
+- `load_gsd_file` refuses files that contain a `DOCTYPE` or `ENTITY`
+  declaration (GSDML never needs one; they enable XXE and entity bombs),
+  files in encodings other than UTF-8/16/32, ASCII, ISO-8859-x and
+  windows-125x, and files over 32 MiB.
 - `PROFINET_CONTROLLER_IP`, `PROFINET_NETWORK` and `PROFINET_DCP_PORT` are
   reported by `ping` and `get_connection_status` but not used for anything.
 - No alarms, diagnostics, record data, topology (LLDP) or PROFINET security

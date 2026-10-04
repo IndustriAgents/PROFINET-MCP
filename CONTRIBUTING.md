@@ -34,8 +34,9 @@ that breaks one of these needs a reason in the pull request:
    `PROFINET_WRITES_ENABLED=true`; the DCP configuration tools
    (`set_device_name`, `set_device_ip`, `identify_device`) need that *and*
    `PROFINET_CONFIG_CMDS_ENABLED=true`. Both default to `false`, and both are
-   read only from the real environment or `--env-file`, never from a `.env`
-   the server discovers by itself.
+   read only from the real environment or `--env-file`. Without `--env-file`
+   the only `.env` read is `profinet-python/.env` (never the working
+   directory's), and it may set only the server's own non-gate settings.
 3. **A mock for every protocol.** If you add a tool, the mock has to be able to
    answer it (with `PROFINET_BACKEND=mock`), or nobody can test it without a
    plant.
@@ -44,8 +45,14 @@ that breaks one of these needs a reason in the pull request:
    do something, the tool says so (`success: false`, "Not implemented ...")
    and sends nothing.
 5. **A change reaches the device at most once.** Only connecting may be
-   retried. Once a write or DCP command may have gone out, a lost reply is
-   reported as `meta.outcome: "unknown"`, never retried.
+   retried. Once a write or DCP command may have gone out, a lost or garbled
+   reply - or an expired deadline - is reported as `meta.outcome: "unknown"`,
+   never retried; "rejected" is only for refusals that guarantee nothing was
+   applied. Tools that change a device are annotated `destructiveHint=true`,
+   `idempotentHint=false`.
+6. **Test processes don't outlive the test run.** A subprocess started by a
+   test must exit when its parent dies (the mock takes `--exit-on-stdin-eof`;
+   the MCP server exits when stdin closes).
 
 ## Getting set up
 
@@ -143,6 +150,8 @@ you used.
   Describe each parameter too (`Annotated[..., Field(description=...)]`).
 - Read configuration through `ProfinetConfig.from_env()`, which the CLI calls
   after loading `.env`; never read `os.environ` at import time.
+- The tests assume there is no `profinet-python/.env` in your checkout (the
+  one test that would be affected skips itself if there is).
 - Keep tool names and argument names aligned with the other IndustriConnect
   servers.
 

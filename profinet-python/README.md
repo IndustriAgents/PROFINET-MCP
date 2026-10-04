@@ -50,23 +50,35 @@ Tools that change a device (`write_io_data`, `write_device_by_alias`,
 | `not_sent` | `false` | Refused by a switch, invalid arguments, no backend, backend unreachable, or not implemented |
 
 Connecting to the mock is retried (`PROFINET_MAX_RETRIES`); a read whose reply
-is lost is sent again, but a write or DCP command never is.
+is lost is sent again, but a write or DCP command never is. "rejected" is used
+only when the mock marks a refusal `"rejected": true` (refused before anything
+changed); any other failure after a send is "unknown". Every request also has
+an overall deadline (all connect and reply timeouts, retries and backoff, plus
+slack), so no call can hang.
 
 ## Configuration
 
 Set these as environment variables, for example in your MCP client's `env`
-block, or in a `.env` file in the working directory (or a parent directory).
-`--env-file PATH` loads a specific file instead. Values already in the
+block, or in a file passed with `--env-file PATH`. Values already in the
 environment win over the file. Settings are read when the server starts, and
 an unusable value (for example `PROFINET_WRITES_ENABLED=maybe`) stops it with
 a message on stderr. [`.env.example`](.env.example) lists them all.
 
-**Safety switches (`PROFINET_*_ENABLED`) are read only from the real
-environment or `--env-file`.** In a `.env` that the server discovers by itself
-they are ignored, and stderr says so (`warning: ignoring
-PROFINET_WRITES_ENABLED from ...`): when an MCP client starts the server, the
-working directory is the client's project, which may not be trusted to turn
-writes on.
+Without `--env-file`, the server also reads **`profinet-python/.env`** of a
+source checkout, found relative to the package source. It never reads a `.env`
+from the working directory or its parents (when an MCP client starts the
+server, that is the client's project, which may not be trusted; settings such
+as the mock address or the device map decide where a write goes), and an
+installed package reads no implicit `.env` at all. That file is applied
+defensively:
+
+- **safety switches (`PROFINET_*_ENABLED`) in it are ignored** - they come
+  only from the real environment or `--env-file`;
+- it may set only `PROFINET_*` settings and `DEVICE_MAP_FILE`; anything else
+  (`PATH`, `LD_PRELOAD`, `PYTHONPATH`, ...) is ignored;
+- keys are compared case-insensitively (as Windows does), with `export` and
+  quotes handled;
+- each ignored key is named in a warning on stderr.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|

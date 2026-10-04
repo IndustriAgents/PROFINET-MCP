@@ -34,16 +34,26 @@ application on the office network.
   running plant takes it away from the IO controller that expects it.
 - **Set the switches where you control them.** The safety switches
   (`PROFINET_*_ENABLED`) are honoured only from the real process environment
-  or a file you pass with `--env-file`. A `.env` the server discovers in its
-  working directory (or a parent) is ignored for them, with a warning on
-  stderr: when an MCP client launches the server, that directory is the
-  client's project, which you may not control. See
+  or a file you pass with `--env-file`.
+- **No settings from the client's project.** Without `--env-file` the server
+  reads only `profinet-python/.env` of a source checkout, found relative to
+  the package; never a `.env` in its working directory or a parent, which
+  for a server launched by an MCP client is the client's project and may not
+  be trusted (the mock address and device map decide where a write goes). An
+  installed package reads no implicit `.env`. Even that file may set only
+  `PROFINET_*` settings and `DEVICE_MAP_FILE` - not safety switches, not
+  `PATH`, `LD_PRELOAD`, `PYTHON*` or anything else - and keys are compared
+  case-insensitively, as Windows does. See
   [`profinet-python/.env.example`](profinet-python/.env.example).
 - **A change is sent at most once.** Connecting may be retried, but once a
   write or DCP command has gone out the server never re-sends it. If the reply
-  is lost, the tool returns `success: false` with `meta.outcome: "unknown"`:
-  the change may have been applied, so read the device back before trying
-  again.
+  is lost or garbled, or the overall deadline expires, the tool returns
+  `success: false` with `meta.outcome: "unknown"`: the change may have been
+  applied, so read the device back before trying again.
+- **GSDML files are untrusted input.** `load_gsd_file` refuses any `DOCTYPE`
+  or `ENTITY` declaration before parsing (blocking XXE and entity-expansion
+  bombs on every libxml2 version), unusual encodings and files over 32 MiB,
+  and parses with entity expansion, DTD loading and network access off.
 - **Do not expose the server beyond the host running the client.** It is a
   stdio process meant to run next to the MCP client, not a network service.
 - **Limit what the server's account can reach.** Real DCP and I/O traffic is
