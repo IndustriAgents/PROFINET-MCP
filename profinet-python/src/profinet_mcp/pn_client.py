@@ -1,119 +1,120 @@
-"""High-level PROFINET helper built on Scapy/raw sockets (scaffold)."""
+"""PROFINET client facade: safety switches, timing, and routing to the configured backend."""
 
 from __future__ import annotations
 
-import os
-import threading
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from collections.abc import Awaitable
+from typing import Any, TypeVar
 
-import anyio
+from .backends import (
+    Backend,
+    BackendNotConfigured,
+    OperationNotImplemented,
+    OperationRefused,
+    ProfinetClientError,
+    create_backend,
+)
+from .config import ProfinetConfig
 
-try:
-    from scapy.all import Ether  # type: ignore
-except Exception:  # pragma: no cover - scapy optional for scaffold
-    Ether = None
+__all__ = [
+    "BackendNotConfigured",
+    "OperationNotImplemented",
+    "OperationRefused",
+    "ProfinetClient",
+    "ProfinetClientError",
+    "match_device",
+]
+
+T = TypeVar("T")
+
+WRITES_DISABLED = (
+    "Writes are disabled, so nothing was sent. The server is read-only by default; set "
+    "PROFINET_WRITES_ENABLED=true in the server's environment to allow write_io_data and write_device_by_alias."
+)
+CONFIG_CMDS_DISABLED = (
+    "Configuration commands are disabled, so nothing was sent. Set PROFINET_CONFIG_CMDS_ENABLED=true in the "
+    "server's environment to allow set_device_name and set_device_ip."
+)
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    val = os.getenv(name)
-    if val is None:
-        return default
-    return val.strip().lower() in {"1", "true", "t", "yes", "on"}
-
-
-@dataclass(slots=True)
-class ProfinetConfig:
-    interface: str = os.getenv("PROFINET_INTERFACE", "eth0")
-    controller_ip: str = os.getenv("PROFINET_CONTROLLER_IP", "192.168.1.1")
-    network_cidr: str = os.getenv("PROFINET_NETWORK", "192.168.1.0/24")
-    dcp_port: int = int(os.getenv("PROFINET_DCP_PORT", "34964"))
-    dcp_timeout: float = float(os.getenv("PROFINET_DCP_TIMEOUT", "5"))
-    timeout: float = float(os.getenv("PROFINET_TIMEOUT", "10"))
-    max_retries: int = int(os.getenv("PROFINET_MAX_RETRIES", "3"))
-    retry_backoff_base: float = float(os.getenv("PROFINET_RETRY_BACKOFF_BASE", "0.5"))
-    writes_enabled: bool = _env_bool("PROFINET_WRITES_ENABLED", True)
-    config_cmds_enabled: bool = _env_bool("PROFINET_CONFIG_CMDS_ENABLED", False)
-
-
-class ProfinetClientError(RuntimeError):
-    """Raised when PROFINET operations fail."""
+def match_device(devices: list[dict[str, Any]], identifier: str) -> dict[str, Any] | None:
+    """Find a device by station name (case-insensitive), IP address or MAC address."""
+    wanted = identifier.strip().lower()
+    wanted_mac = wanted.replace("-", ":")
+    for device in devices:
+        name = device.get("device_name")
+        if isinstance(name, str) and name.lower() == wanted:
+            return device
+    for device in devices:
+        if device.get("ip_address") == wanted or device.get("mac_address") == wanted_mac:
+            return device
+    return None
 
 
 class ProfinetClient:
-    """Async-friendly facade for PROFINET DCP/IO helpers."""
+    """One object per server. The same :class:`ProfinetConfig` drives the tools and the client."""
 
-    def __init__(self, config: Optional[ProfinetConfig] = None) -> None:
-        self.config = config or ProfinetConfig()
-        self._lock = threading.RLock()
-        self._devices: Dict[str, Dict[str, Any]] = {}
+    def __init__(self, config: ProfinetConfig, backend: Backend | None = None) -> None:
+        self.config = config
+        self.backend = backend if backend is not None else create_backend(config)
 
-    async def discover_devices(self, timeout: Optional[float] = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        """Perform PROFINET DCP discovery (placeholder implementation)."""
-        await anyio.to_thread.run_sync(self._require_scapy)
-        max_wait = timeout or self.config.dcp_timeout
+    @property
+    def backend_name(self) -> str:
+        return self.backend.name
+
+    async def _timed(self, operation: Awaitable[tuple[T, dict[str, Any]]]) -> tuple[T, dict[str, Any]]:
         start = time.perf_counter()
-        # TODO: send DCP identify and parse responses
-        # For now return cached entries (if manual) or sample stub
-        devices = list(self._devices.values()) or [
-            {
-                "device_name": "PN-DEVICE-01",
-                "mac_address": "00:11:22:33:44:55",
-                "ip_address": "192.168.1.100",
-                "vendor": "SampleVendor",
-                "device_type": "IO Device",
-            }
-        ]
-        duration = (time.perf_counter() - start) * 1000.0
-        return devices, {"duration_ms": round(duration, 3), "timeout": max_wait}
+        result, meta = await operation
+        meta = {"backend": self.backend.name, **meta}
+        meta["duration_ms"] = round((time.perf_counter() - start) * 1000.0, 3)
+        return result, meta
 
-    async def read_io_data(self, device_name: str, slot: int, subslot: int, length: int) -> Tuple[bytes, Dict[str, Any]]:
-        """Placeholder I/O read."""
-        start = time.perf_counter()
-        # TODO: implement cyclic/acyclic read via PROFINET services
-        payload = bytes([0] * length)
-        duration = (time.perf_counter() - start) * 1000.0
-        return payload, {"duration_ms": round(duration, 3), "device_name": device_name, "slot": slot, "subslot": subslot}
+    async def discover_devices(self, timeout: float | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        wait = timeout if timeout is not None else self.config.dcp_timeout
+        return await self._timed(self.backend.discover(wait))
 
-    async def write_io_data(self, device_name: str, slot: int, subslot: int, data: bytes) -> Dict[str, Any]:
+    async def find_device(self, identifier: str, timeout: float | None = None) -> tuple[dict | None, dict[str, Any]]:
+        devices, meta = await self.discover_devices(timeout)
+        return match_device(devices, identifier), meta
+
+    async def read_io_data(
+        self, device_name: str, slot: int, subslot: int, length: int
+    ) -> tuple[bytes, dict[str, Any]]:
+        return await self._timed(self.backend.read_io(device_name, slot, subslot, length))
+
+    async def write_io_data(
+        self, device_name: str, slot: int, subslot: int, data: bytes
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         if not self.config.writes_enabled:
-            raise ProfinetClientError("Writes are disabled by configuration")
-        start = time.perf_counter()
-        # TODO: implement actual write via PROFINET services
-        duration = (time.perf_counter() - start) * 1000.0
-        return {"duration_ms": round(duration, 3), "device_name": device_name, "written_bytes": len(data)}
+            raise OperationRefused(WRITES_DISABLED)
+        return await self._timed(self.backend.write_io(device_name, slot, subslot, data))
 
-    async def set_device_name(self, device_mac: str, name: str) -> Dict[str, Any]:
+    async def identify_device(self, device_mac: str, duration_s: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        return await self._timed(self.backend.identify(device_mac, duration_s))
+
+    async def set_device_name(self, device_mac: str, name: str) -> tuple[dict[str, Any], dict[str, Any]]:
         if not self.config.config_cmds_enabled:
-            raise ProfinetClientError("Configuration commands are disabled (set PROFINET_CONFIG_CMDS_ENABLED=true)")
-        start = time.perf_counter()
-        # TODO: send DCP Set request
-        duration = (time.perf_counter() - start) * 1000.0
-        return {"device_mac": device_mac, "name": name, "duration_ms": round(duration, 3)}
+            raise OperationRefused(CONFIG_CMDS_DISABLED)
+        return await self._timed(self.backend.set_name(device_mac, name))
 
-    async def set_device_ip(self, device_mac: str, ip: str, subnet: str, gateway: Optional[str]) -> Dict[str, Any]:
+    async def set_device_ip(
+        self, device_mac: str, ip_address: str, subnet_mask: str, gateway: str
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         if not self.config.config_cmds_enabled:
-            raise ProfinetClientError("Configuration commands are disabled")
-        start = time.perf_counter()
-        # TODO: send DCP Set IP
-        duration = (time.perf_counter() - start) * 1000.0
-        return {"device_mac": device_mac, "ip": ip, "duration_ms": round(duration, 3)}
+            raise OperationRefused(CONFIG_CMDS_DISABLED)
+        return await self._timed(self.backend.set_ip(device_mac, ip_address, subnet_mask, gateway))
 
-    async def identify_device(self, device_mac: str, duration_s: int = 5) -> Dict[str, Any]:
-        start = time.perf_counter()
-        # TODO: send identify LED command
-        duration = (time.perf_counter() - start) * 1000.0
-        return {"device_mac": device_mac, "duration_ms": round(duration, 3), "identify_duration_s": duration_s}
-
-    def connection_status(self) -> Dict[str, Any]:
-        return {
+    def connection_status(self) -> dict[str, Any]:
+        """Configured settings only; nothing is contacted."""
+        status = {
+            "backend": self.backend.name,
             "interface": self.config.interface,
             "controller_ip": self.config.controller_ip,
             "network": self.config.network_cidr,
             "dcp_port": self.config.dcp_port,
         }
+        status.update(self.backend.describe())
+        return status
 
-    def _require_scapy(self) -> None:
-        if Ether is None:  # pragma: no cover - runtime guard
-            raise ProfinetClientError("scapy is required for PROFINET operations. Install scapy>=2.5.0")
+    async def probe(self) -> dict[str, Any]:
+        return await self.backend.probe()
