@@ -13,6 +13,8 @@ Every backend answers with ``(result, meta)``; ``meta["backend"]`` names it.
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Callable
 from typing import Any, Protocol
 
 import anyio
@@ -50,7 +52,22 @@ class BackendNotConfigured(ProfinetClientError):
 
 
 class OperationRefused(ProfinetClientError):
-    """Refused by a safety switch (writes or configuration commands disabled)."""
+    """Refused by a safety switch (writes or configuration commands disabled), or rate-limited."""
+
+
+class RateLimited(OperationRefused):
+    """Refused because the same request went out too recently; ``retry_after`` is in seconds."""
+
+    def __init__(self, message: str, retry_after: float) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class OutcomeUnknown(ProfinetClientError):
+    """A write or configuration command was sent but not confirmed; it may have been applied.
+
+    Such requests are never re-sent automatically, so a change cannot reach the device twice.
+    """
 
 
 Meta = dict[str, Any]
@@ -178,32 +195,56 @@ class MockBackend:
             "PROFINET_MOCK_HOST / PROFINET_MOCK_PORT."
         )
 
-    async def call(self, request: dict[str, Any], timeout: float | None = None) -> Any:
-        """Send one request and return the ``data`` of a successful answer."""
+    async def call(self, request: dict[str, Any], timeout: float | None = None, *, changes_device: bool) -> Any:
+        """Send one request and return the ``data`` of a successful answer.
+
+        Connecting is retried (``max_retries``). After the request has been sent, a read that gets no
+        reply is sent again, but a request that ``changes_device`` (write, identify, set_name, set_ip)
+        never is: the device may already have applied it, so the caller gets :class:`OutcomeUnknown`.
+        """
         op = request["op"]
-        stream = await self._connect()
-        try:
-            async with stream:
-                with anyio.fail_after(timeout or self.timeout):
-                    await stream.send(json.dumps(request).encode("utf-8") + b"\n")
-                    line = await BufferedByteReceiveStream(stream).receive_until(b"\n", MAX_RESPONSE_BYTES)
-        except TimeoutError:
-            raise ProfinetClientError(f"The mock at {self.endpoint} did not answer {op!r} in time") from None
-        except (OSError, anyio.EndOfStream, anyio.BrokenResourceError, anyio.IncompleteRead) as exc:
-            raise ProfinetClientError(f"Lost the connection to the mock at {self.endpoint}: {exc!r}") from None
-        except anyio.DelimiterNotFound:
-            raise ProfinetClientError(
-                f"The mock's answer to {op!r} was larger than {MAX_RESPONSE_BYTES} bytes"
-            ) from None
+        payload = json.dumps(request).encode("utf-8") + b"\n"
+        attempts = 1 if changes_device else self.max_retries + 1
+        for attempt in range(attempts):
+            stream = await self._connect()  # nothing has been sent yet, so this may retry
+            try:
+                async with stream:
+                    with anyio.fail_after(timeout or self.timeout):
+                        await stream.send(payload)
+                        line = await BufferedByteReceiveStream(stream).receive_until(b"\n", MAX_RESPONSE_BYTES)
+                break
+            except anyio.DelimiterNotFound:
+                problem = f"its answer was larger than {MAX_RESPONSE_BYTES} bytes"
+            except TimeoutError:
+                problem = f"no reply within {timeout or self.timeout:g} s"
+            except (OSError, anyio.EndOfStream, anyio.BrokenResourceError, anyio.IncompleteRead) as exc:
+                problem = f"no reply; the connection was lost ({type(exc).__name__})"
+            if changes_device:
+                raise self._unknown(op, problem)
+            if attempt + 1 < attempts and not problem.startswith("its answer"):
+                await anyio.sleep(self.backoff_base * (2**attempt))
+                continue
+            raise ProfinetClientError(f"The mock at {self.endpoint} did not answer {op!r}: {problem}")
+
         try:
             response = json.loads(line)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            raise ProfinetClientError(f"The mock answered {op!r} with something that is not JSON") from None
+            response = None
         if not isinstance(response, dict) or not isinstance(response.get("success"), bool):
-            raise ProfinetClientError(f"The mock answered {op!r} without a success flag")
+            problem = "its answer is not JSON with a success flag"
+            if changes_device:
+                raise self._unknown(op, problem)
+            raise ProfinetClientError(f"The mock answered {op!r} badly: {problem}")
         if not response["success"]:
             raise ProfinetClientError(f"Mock IO device: {response.get('error') or 'request failed'}")
         return response.get("data")
+
+    def _unknown(self, op: str, problem: str) -> OutcomeUnknown:
+        return OutcomeUnknown(
+            f"No usable reply from the mock IO device at {self.endpoint} to {op!r} ({problem}); the change may "
+            "have been applied. It was not sent again: check the device state (for example read it back) "
+            "before retrying."
+        )
 
     @staticmethod
     def _device_record(raw: Any) -> dict[str, Any]:
@@ -217,13 +258,15 @@ class MockBackend:
         return record
 
     async def discover(self, timeout: float) -> tuple[list[dict[str, Any]], Meta]:
-        data = await self.call({"op": "discover"}, timeout=timeout)
+        data = await self.call({"op": "discover"}, timeout=timeout, changes_device=False)
         if not isinstance(data, list):
             raise ProfinetClientError("The mock's discover answer is not a list")
         return [self._device_record(item) for item in data], self._meta("discover")
 
     async def read_io(self, device: str, slot: int, subslot: int, length: int) -> tuple[bytes, Meta]:
-        data = await self.call({"op": "read", "device": device, "slot": slot, "subslot": subslot, "length": length})
+        data = await self.call(
+            {"op": "read", "device": device, "slot": slot, "subslot": subslot, "length": length}, changes_device=False
+        )
         try:
             payload = bytes.fromhex(data["raw_data_hex"])
         except (TypeError, KeyError, ValueError):
@@ -237,35 +280,37 @@ class MockBackend:
 
     async def write_io(self, device: str, slot: int, subslot: int, data: bytes) -> tuple[dict[str, Any], Meta]:
         answer = await self.call(
-            {"op": "write", "device": device, "slot": slot, "subslot": subslot, "data": list(data)}
+            {"op": "write", "device": device, "slot": slot, "subslot": subslot, "data": list(data)},
+            changes_device=True,
         )
         written = answer.get("written_bytes") if isinstance(answer, dict) else None
         if written != len(data):
-            raise ProfinetClientError(f"The mock confirmed {written!r} written bytes, expected {len(data)}")
+            raise self._unknown("write", f"it confirmed {written!r} written bytes, expected {len(data)}")
         return {"written_bytes": written}, self._meta("write")
 
     async def identify(self, mac: str, duration_s: int) -> tuple[dict[str, Any], Meta]:
-        answer = await self.call({"op": "identify", "mac": mac, "duration_s": duration_s})
-        return self._confirmed(answer, mac), self._meta("identify")
+        answer = await self.call({"op": "identify", "mac": mac, "duration_s": duration_s}, changes_device=True)
+        return self._confirmed("identify", answer, mac), self._meta("identify")
 
     async def set_name(self, mac: str, name: str) -> tuple[dict[str, Any], Meta]:
-        answer = await self.call({"op": "set_name", "mac": mac, "name": name})
-        result = self._confirmed(answer, mac)
+        answer = await self.call({"op": "set_name", "mac": mac, "name": name}, changes_device=True)
+        result = self._confirmed("set_name", answer, mac)
         if result.get("device_name") != name:
-            raise ProfinetClientError(f"The mock did not confirm the new name {name!r}")
+            raise self._unknown("set_name", f"it did not confirm the new name {name!r}")
         return result, self._meta("set_name")
 
     async def set_ip(self, mac: str, ip: str, subnet: str, gateway: str) -> tuple[dict[str, Any], Meta]:
-        answer = await self.call({"op": "set_ip", "mac": mac, "ip": ip, "subnet": subnet, "gateway": gateway})
-        result = self._confirmed(answer, mac)
+        answer = await self.call(
+            {"op": "set_ip", "mac": mac, "ip": ip, "subnet": subnet, "gateway": gateway}, changes_device=True
+        )
+        result = self._confirmed("set_ip", answer, mac)
         if (result.get("ip_address"), result.get("subnet_mask"), result.get("gateway")) != (ip, subnet, gateway):
-            raise ProfinetClientError("The mock did not confirm the requested IP settings")
+            raise self._unknown("set_ip", "it did not confirm the requested IP settings")
         return result, self._meta("set_ip")
 
-    @staticmethod
-    def _confirmed(answer: Any, mac: str) -> dict[str, Any]:
+    def _confirmed(self, op: str, answer: Any, mac: str) -> dict[str, Any]:
         if not isinstance(answer, dict) or answer.get("mac_address") != mac:
-            raise ProfinetClientError(f"The mock did not confirm the operation for {mac}")
+            raise self._unknown(op, f"it did not confirm the operation for {mac}")
         return answer
 
     async def probe(self) -> dict[str, Any]:
@@ -294,14 +339,29 @@ DCP_SET_NOT_IMPLEMENTED = (
 )
 
 
+#: Minimum time between two DCP Identify All multicasts, so a model calling discovery in a loop cannot
+#: flood the PROFINET network (every device answers every request).
+MIN_IDENTIFY_INTERVAL_S = 2.0
+
+
 class NetworkBackend:
     """Real network. Discovery uses DCP Identify All; everything else is refused honestly."""
 
     name = BACKEND_NETWORK
 
-    def __init__(self, interface: str, transport: dcp.L2Transport | None = None) -> None:
+    def __init__(
+        self,
+        interface: str,
+        transport: dcp.L2Transport | None = None,
+        *,
+        min_interval: float = MIN_IDENTIFY_INTERVAL_S,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.interface = interface
         self.transport = transport if transport is not None else dcp.ScapyL2Transport(interface)
+        self.min_interval = min_interval
+        self._clock = clock
+        self._last_identify: float | None = None
 
     def describe(self) -> dict[str, Any]:
         return {"backend": self.name, "interface": self.interface}
@@ -310,9 +370,22 @@ class NetworkBackend:
         return {"backend": self.name, "interface": self.interface}
 
     async def discover(self, timeout: float) -> tuple[list[dict[str, Any]], Meta]:
+        now = self._clock()
+        previous = self._last_identify
+        if previous is not None and now - previous < self.min_interval:
+            wait = self.min_interval - (now - previous)
+            raise RateLimited(
+                f"DCP Identify All was sent {now - previous:.1f} s ago; discovery is limited to one request every "
+                f"{self.min_interval:g} s so the PROFINET network is not flooded. Nothing was sent; try again in "
+                f"{wait:.1f} s.",
+                wait,
+            )
+        # Claimed before the (threaded) exchange, so concurrent calls are refused too.
+        self._last_identify = now
         try:
             devices, info = await anyio.to_thread.run_sync(dcp.identify_all, self.transport, timeout)
         except dcp.DcpError as exc:
+            self._last_identify = previous  # the request did not go out (or the capture failed)
             raise ProfinetClientError(str(exc)) from exc
         meta = self._meta()
         meta.update(info)

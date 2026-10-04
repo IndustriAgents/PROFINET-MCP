@@ -20,6 +20,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field, ValidationError
 
 from . import __version__, validation
+from .backends import RateLimited
 from .config import ProfinetConfig
 from .gsd_parser import GSDMLError, GSDParser
 from .pn_client import (
@@ -28,6 +29,7 @@ from .pn_client import (
     BackendNotConfigured,
     OperationNotImplemented,
     OperationRefused,
+    OutcomeUnknown,
     ProfinetClient,
     ProfinetClientError,
 )
@@ -181,8 +183,12 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
                 return await fn(*args, **kwargs)
             except validation.InvalidArgument as exc:
                 return err(tool, f"Invalid arguments: {exc}")
+            except RateLimited as exc:
+                return err(tool, str(exc), backend_meta(refused=True, retry_after_s=round(exc.retry_after, 1)))
             except OperationRefused as exc:
                 return err(tool, str(exc), backend_meta(refused=True))
+            except OutcomeUnknown as exc:
+                return err(tool, str(exc), backend_meta(outcome_unknown=True))
             except OperationNotImplemented as exc:
                 return err(tool, str(exc), backend_meta(not_implemented=True))
             except BackendNotConfigured as exc:
@@ -288,11 +294,14 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
     @tool(ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
     async def identify_device(device_mac: DeviceMac, duration_s: IdentifySeconds = 5) -> Envelope:
-        """Make a device flash its identification LED (DCP Signal) so it can be found in the cabinet.
+        """Make a device flash its identification LED (DCP Set Signal) so it can be found in the cabinet.
 
-        Supported by the mock backend. The network backend does not implement DCP Set and returns
-        success=false without sending anything.
+        A DCP configuration command: refused unless PROFINET_CONFIG_CMDS_ENABLED=true, like
+        set_device_name. Supported by the mock backend. The network backend does not implement DCP Set
+        and returns success=false without sending anything.
         """
+        if not config.config_cmds_enabled:
+            raise OperationRefused(CONFIG_CMDS_DISABLED)
         mac = validation.mac_address(device_mac)
         result, meta = await client.identify_device(mac, duration_s)
         return ok("identify_device", result, meta)

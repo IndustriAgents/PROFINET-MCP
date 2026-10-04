@@ -15,7 +15,9 @@ from profinet_mcp.backends import (
     MockBackend,
     NetworkBackend,
     OperationNotImplemented,
+    OutcomeUnknown,
     ProfinetClientError,
+    RateLimited,
     UnconfiguredBackend,
     create_backend,
 )
@@ -84,11 +86,11 @@ async def test_unreachable_mock_is_an_error_after_retries() -> None:
 @pytest.mark.parametrize(
     ("answer", "fragment"),
     [
-        (b"not json\n", "not JSON"),
+        (b"not json\n", "not JSON with a success flag"),
         (b'{"data": []}\n', "success flag"),
         (b'{"success": true, "data": {"raw_data_hex": "0001"}}\n', "returned 2 bytes, expected 4"),
         (b'{"success": true, "data": {"raw_data_hex": "zz"}}\n', "raw_data_hex"),
-        (b"", "Lost the connection"),
+        (b"", "connection was lost"),
     ],
 )
 async def test_malformed_mock_answers_are_rejected(answer: bytes, fragment: str) -> None:
@@ -125,6 +127,119 @@ async def test_unconfirmed_write_is_not_reported_as_success() -> None:
                 await MockBackend("127.0.0.1", port, timeout=2, max_retries=0).write_io("x", 1, 2, b"abc")
         finally:
             tg.cancel_scope.cancel()
+
+
+class DroppingMock:
+    """A fake mock that applies every request it receives, then never answers (or hangs up)."""
+
+    def __init__(self, mode: str, answer_after: int | None = None) -> None:
+        self.mode = mode  # "hang-up" closes the connection, "silent" keeps it open without replying
+        self.received: list[dict] = []
+        self.answer_after = answer_after  # answer normally once this many requests were dropped
+
+    async def handle(self, stream) -> None:
+        async with stream:
+            request = json.loads(await stream.receive())
+            self.received.append(request)
+            if self.answer_after is not None and len(self.received) > self.answer_after:
+                data = {"device_name": "x", "raw_data_hex": "0102"}
+                await stream.send(json.dumps({"success": True, "data": data}).encode() + b"\n")
+                return
+            if self.mode == "silent":
+                await anyio.sleep(30)
+
+
+async def serve(fake: DroppingMock, task_group) -> int:
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    task_group.start_soon(listener.serve, fake.handle)
+    return listener.extra(SocketAttribute.local_port)
+
+
+CHANGES = [
+    ("write", lambda b: b.write_io("PN-DEVICE-01", 1, 2, b"\x01\x02")),
+    ("set_name", lambda b: b.set_name(MAC, "new-name")),
+    ("set_ip", lambda b: b.set_ip(MAC, "10.0.0.2", "255.0.0.0", "0.0.0.0")),
+    ("identify", lambda b: b.identify(MAC, 5)),
+]
+
+
+@pytest.mark.parametrize("mode", ["hang-up", "silent"])
+@pytest.mark.parametrize(("op", "operation"), CHANGES, ids=[op for op, _ in CHANGES])
+async def test_changes_are_never_sent_twice(mode: str, op: str, operation) -> None:
+    """A write or config command whose reply is lost must reach the device exactly once."""
+    fake = DroppingMock(mode)
+    async with anyio.create_task_group() as tg:
+        port = await serve(fake, tg)
+        backend = MockBackend("127.0.0.1", port, timeout=0.5, max_retries=3, backoff_base=0.01)
+        try:
+            with pytest.raises(OutcomeUnknown, match="may have been applied. It was not sent again"):
+                await operation(backend)
+        finally:
+            tg.cancel_scope.cancel()
+    assert [r["op"] for r in fake.received] == [op]
+
+
+async def test_reads_are_retried_when_the_reply_is_lost() -> None:
+    fake = DroppingMock("hang-up", answer_after=2)
+    async with anyio.create_task_group() as tg:
+        port = await serve(fake, tg)
+        backend = MockBackend("127.0.0.1", port, timeout=0.5, max_retries=3, backoff_base=0.01)
+        try:
+            payload, _ = await backend.read_io("x", 1, 1, 2)
+        finally:
+            tg.cancel_scope.cancel()
+    assert payload == b"\x01\x02"
+    assert [r["op"] for r in fake.received] == ["read", "read", "read"]
+
+
+async def test_reads_give_up_after_max_retries() -> None:
+    fake = DroppingMock("hang-up")
+    async with anyio.create_task_group() as tg:
+        port = await serve(fake, tg)
+        backend = MockBackend("127.0.0.1", port, timeout=0.5, max_retries=1, backoff_base=0.01)
+        try:
+            with pytest.raises(ProfinetClientError, match="did not answer 'read'") as raised:
+                await backend.read_io("x", 1, 1, 2)
+        finally:
+            tg.cancel_scope.cancel()
+    assert not isinstance(raised.value, OutcomeUnknown)
+    assert len(fake.received) == 2
+
+
+async def test_unreachable_mock_write_is_not_an_unknown_outcome() -> None:
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    port = listener.extra(SocketAttribute.local_port)
+    await listener.aclose()
+    backend = MockBackend("127.0.0.1", port, timeout=1, max_retries=2, backoff_base=0.01)
+    with pytest.raises(ProfinetClientError, match="Cannot reach the mock IO device .*3 attempt") as raised:
+        await backend.write_io("x", 1, 2, b"\x01")  # connecting is retried: nothing had been sent
+    assert not isinstance(raised.value, OutcomeUnknown)
+
+
+async def test_network_discovery_is_rate_limited(monkeypatch) -> None:
+    now = [100.0]
+    transport = FakeTransport([])
+    backend = NetworkBackend("fake0", transport=transport, clock=lambda: now[0])
+    await backend.discover(0.5)
+    now[0] += 0.5
+    with pytest.raises(RateLimited, match="Nothing was sent; try again in 1.5 s") as raised:
+        await backend.discover(0.5)
+    assert raised.value.retry_after == pytest.approx(1.5)
+    assert len(transport.sent) == 1
+    now[0] += 1.5
+    await backend.discover(0.5)
+    assert len(transport.sent) == 2
+
+
+async def test_failed_discovery_does_not_count_against_the_rate_limit() -> None:
+    class Broken(FakeTransport):
+        def local_mac(self) -> str:
+            raise dcp.DcpError("Interface 'nonexistent0' was not found")
+
+    backend = NetworkBackend("nonexistent0", transport=Broken([]), clock=lambda: 5.0)
+    for _ in range(2):  # the second call is not refused as "too soon"
+        with pytest.raises(ProfinetClientError, match="nonexistent0"):
+            await backend.discover(0.5)
 
 
 async def test_network_backend_discovers_with_dcp(monkeypatch) -> None:

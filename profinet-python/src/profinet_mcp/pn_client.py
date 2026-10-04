@@ -11,6 +11,7 @@ from .backends import (
     BackendNotConfigured,
     OperationNotImplemented,
     OperationRefused,
+    OutcomeUnknown,
     ProfinetClientError,
     create_backend,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "BackendNotConfigured",
     "OperationNotImplemented",
     "OperationRefused",
+    "OutcomeUnknown",
     "ProfinetClient",
     "ProfinetClientError",
     "match_device",
@@ -32,8 +34,8 @@ WRITES_DISABLED = (
     "PROFINET_WRITES_ENABLED=true in the server's environment to allow write_io_data and write_device_by_alias."
 )
 CONFIG_CMDS_DISABLED = (
-    "Configuration commands are disabled, so nothing was sent. Set PROFINET_CONFIG_CMDS_ENABLED=true in the "
-    "server's environment to allow set_device_name and set_device_ip."
+    "DCP configuration commands are disabled, so nothing was sent. Set PROFINET_CONFIG_CMDS_ENABLED=true in the "
+    "server's environment to allow set_device_name, set_device_ip and identify_device."
 )
 
 
@@ -90,6 +92,9 @@ class ProfinetClient:
         return await self._timed(self.backend.write_io(device_name, slot, subslot, data))
 
     async def identify_device(self, device_mac: str, duration_s: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        # DCP Set (Signal): a configuration command like set_device_name, behind the same switch.
+        if not self.config.config_cmds_enabled:
+            raise OperationRefused(CONFIG_CMDS_DISABLED)
         return await self._timed(self.backend.identify(device_mac, duration_s))
 
     async def set_device_name(self, device_mac: str, name: str) -> tuple[dict[str, Any], dict[str, Any]]:
