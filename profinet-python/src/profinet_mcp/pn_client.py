@@ -9,6 +9,8 @@ from typing import Any, TypeVar
 from .backends import (
     Backend,
     BackendNotConfigured,
+    BackendUnavailable,
+    DeviceRejected,
     OperationNotImplemented,
     OperationRefused,
     OutcomeUnknown,
@@ -19,6 +21,8 @@ from .config import ProfinetConfig
 
 __all__ = [
     "BackendNotConfigured",
+    "BackendUnavailable",
+    "DeviceRejected",
     "OperationNotImplemented",
     "OperationRefused",
     "OutcomeUnknown",

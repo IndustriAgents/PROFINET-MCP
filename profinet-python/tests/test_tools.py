@@ -187,6 +187,7 @@ async def test_writes_are_refused_by_default() -> None:
         result = await call(server, tool, **args)
         assert result["success"] is False
         assert "PROFINET_WRITES_ENABLED=true" in result["error"]
+        assert (result["meta"]["outcome"], result["meta"]["request_sent"]) == ("not_sent", False)
         assert result["meta"]["refused"] is True
     assert backend.calls == []
 
@@ -220,6 +221,7 @@ async def test_enabled_writes_and_config_commands_reach_the_backend() -> None:
     server, backend = make_server(writes_enabled=True, config_cmds_enabled=True)
     result = await call(server, "write_io_data", device_name="line1-io", slot=1, subslot=2, data=[1, 255])
     assert result["success"] is True and result["data"]["written_bytes"] == 2
+    assert (result["meta"]["outcome"], result["meta"]["request_sent"]) == ("written", True)
     assert result["meta"]["backend"] == "mock" and "duration_ms" in result["meta"]
 
     result = await call(server, "set_device_name", device_mac=MAC.upper(), name="press-2.hall-b")
@@ -329,7 +331,10 @@ async def test_network_backend_is_honest() -> None:
         result = await call(server, tool, **args)
         assert result["success"] is False, tool
         assert result["error"].startswith("Not implemented on the network backend"), tool
-        assert result["meta"] == {"tool": tool, "backend": "network", "not_implemented": True}
+        expected = {"tool": tool, "backend": "network", "not_implemented": True}
+        if tool != "read_io_data":  # tools that change a device also report the outcome
+            expected.update(outcome="not_sent", request_sent=False)
+        assert result["meta"] == expected
     assert transport.sent == []
 
     result = await call(server, "discover_devices", timeout=0.5)
@@ -452,6 +457,8 @@ async def test_mock_backend_end_to_end_in_process(mock_server) -> None:
     assert back["data"]["raw_data_hex"] == "04030201"
     refused = await call(server, "write_io_data", device_name="pn-device-01", slot=1, subslot=1, data=[1])
     assert refused["success"] is False and "input area" in refused["error"]
+    assert (refused["meta"]["outcome"], refused["meta"]["request_sent"]) == ("rejected", True)
+    assert "outcome" not in back["meta"]  # only tools that change a device report an outcome
 
 
 @pytest.mark.parametrize(
@@ -494,6 +501,24 @@ async def test_lost_reply_to_a_change_is_reported_not_retried(tmp_path, tool: st
         finally:
             tg.cancel_scope.cancel()
     assert result["success"] is False
-    assert "the change may have been applied" in result["error"]
+    assert "may have been applied; check before retrying" in result["error"]
+    assert (result["meta"]["outcome"], result["meta"]["request_sent"]) == ("unknown", True)
     assert result["meta"]["outcome_unknown"] is True and result["meta"]["backend"] == "mock"
     assert len(received) == 1
+
+
+async def test_outcome_is_not_sent_when_nothing_went_out() -> None:
+    server, _ = make_server(writes_enabled=True)
+    invalid = await call(server, "write_io_data", device_name="x", slot=-1, subslot=1, data=[1])
+    assert (invalid["meta"]["outcome"], invalid["meta"]["request_sent"]) == ("not_sent", False)
+
+    unreachable = ProfinetMCPServer(
+        ProfinetConfig(backend="mock", mock_port=1, max_retries=0, timeout=1, writes_enabled=True)
+    )
+    result = await call(unreachable, "write_io_data", device_name="x", slot=1, subslot=2, data=[1])
+    assert result["success"] is False and "Cannot reach the mock" in result["error"]
+    assert (result["meta"]["outcome"], result["meta"]["request_sent"]) == ("not_sent", False)
+
+    nothing = ProfinetMCPServer(ProfinetConfig(writes_enabled=True))
+    result = await call(nothing, "write_io_data", device_name="x", slot=1, subslot=2, data=[1])
+    assert (result["meta"]["outcome"], result["meta"]["request_sent"]) == ("not_sent", False)

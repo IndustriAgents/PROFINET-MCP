@@ -20,7 +20,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field, ValidationError
 
 from . import __version__, validation
-from .backends import RateLimited
+from .backends import BackendUnavailable, DeviceRejected, RateLimited
 from .config import ProfinetConfig
 from .gsd_parser import GSDMLError, GSDParser
 from .pn_client import (
@@ -90,6 +90,18 @@ def envelope(success: bool, data: Any = None, error: str | None = None, meta: di
     return {"success": success, "data": data, "error": error, "meta": meta or {}}
 
 
+#: Tools that change a device. Their envelopes always carry ``meta.outcome`` - "written" (confirmed),
+#: "rejected" (the device refused it), "unknown" (sent, but no usable reply: it may have been applied)
+#: or "not_sent" - and ``meta.request_sent`` (true, false, or null when it cannot be known).
+CHANGE_TOOLS = frozenset(
+    {"write_io_data", "write_device_by_alias", "set_device_name", "set_device_ip", "identify_device"}
+)
+
+
+def outcome(tool: str, result: str, request_sent: bool | None) -> dict[str, Any]:
+    return {"outcome": result, "request_sent": request_sent} if tool in CHANGE_TOOLS else {}
+
+
 def invalid_arguments(tool: str, exc: ValidationError) -> Envelope:
     """Envelope for arguments that failed schema validation (wrong type, out of range, missing)."""
     problems = [
@@ -97,7 +109,8 @@ def invalid_arguments(tool: str, exc: ValidationError) -> Envelope:
         for err in exc.errors(include_url=False)
     ]
     message = "; ".join(f"{p['argument']}: {p['problem']}" for p in problems)
-    return envelope(False, error=f"Invalid arguments: {message}", meta={"tool": tool, "invalid_arguments": problems})
+    meta = {"tool": tool, **outcome(tool, "not_sent", False), "invalid_arguments": problems}
+    return envelope(False, error=f"Invalid arguments: {message}", meta=meta)
 
 
 class DeviceMap:
@@ -187,27 +200,35 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         """Turn every exception into a ``success: false`` envelope."""
         tool = fn.__name__
 
+        not_sent = outcome(tool, "not_sent", False)
+
         @functools.wraps(fn)
         async def wrapper(*args: Any, **kwargs: Any) -> Envelope:
             try:
-                return await fn(*args, **kwargs)
+                result = await fn(*args, **kwargs)
             except validation.InvalidArgument as exc:
-                return err(tool, f"Invalid arguments: {exc}")
+                return err(tool, f"Invalid arguments: {exc}", not_sent)
             except RateLimited as exc:
-                return err(tool, str(exc), backend_meta(refused=True, retry_after_s=round(exc.retry_after, 1)))
+                retry = round(exc.retry_after, 1)
+                return err(tool, str(exc), backend_meta(refused=True, retry_after_s=retry, **not_sent))
             except OperationRefused as exc:
-                return err(tool, str(exc), backend_meta(refused=True))
-            except OutcomeUnknown as exc:
-                return err(tool, str(exc), backend_meta(outcome_unknown=True))
+                return err(tool, str(exc), backend_meta(refused=True, **not_sent))
             except OperationNotImplemented as exc:
-                return err(tool, str(exc), backend_meta(not_implemented=True))
-            except BackendNotConfigured as exc:
-                return err(tool, str(exc), backend_meta())
+                return err(tool, str(exc), backend_meta(not_implemented=True, **not_sent))
+            except (BackendNotConfigured, BackendUnavailable) as exc:
+                return err(tool, str(exc), backend_meta(**not_sent))
+            except DeviceRejected as exc:
+                return err(tool, str(exc), backend_meta(**outcome(tool, "rejected", True)))
+            except OutcomeUnknown as exc:
+                return err(tool, str(exc), backend_meta(outcome_unknown=True, **outcome(tool, "unknown", True)))
             except ProfinetClientError as exc:
-                return err(tool, str(exc), backend_meta())
+                return err(tool, str(exc), backend_meta(**outcome(tool, "unknown", None)))
             except Exception as exc:  # never let a tool call crash the session
                 log.exception("Tool %s failed", tool)
-                return err(tool, f"Internal error: {type(exc).__name__}: {exc}")
+                return err(tool, f"Internal error: {type(exc).__name__}: {exc}", outcome(tool, "unknown", None))
+            if result.get("success"):
+                result["meta"].update(outcome(tool, "written", True))
+            return result
 
         return wrapper
 

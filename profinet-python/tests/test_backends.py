@@ -172,7 +172,7 @@ async def test_changes_are_never_sent_twice(mode: str, op: str, operation) -> No
         port = await serve(fake, tg)
         backend = MockBackend("127.0.0.1", port, timeout=0.5, max_retries=3, backoff_base=0.01)
         try:
-            with pytest.raises(OutcomeUnknown, match="may have been applied. It was not sent again"):
+            with pytest.raises(OutcomeUnknown, match="may have been applied; check before retrying"):
                 await operation(backend)
         finally:
             tg.cancel_scope.cancel()

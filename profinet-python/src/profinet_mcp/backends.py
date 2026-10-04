@@ -63,6 +63,14 @@ class RateLimited(OperationRefused):
         self.retry_after = retry_after
 
 
+class BackendUnavailable(ProfinetClientError):
+    """The backend could not be reached, so the request was never sent."""
+
+
+class DeviceRejected(ProfinetClientError):
+    """The device received the request and refused it (nothing was changed)."""
+
+
 class OutcomeUnknown(ProfinetClientError):
     """A write or configuration command was sent but not confirmed; it may have been applied.
 
@@ -189,7 +197,7 @@ class MockBackend:
                 last = exc
                 if attempt + 1 < attempts:
                     await anyio.sleep(self.backoff_base * (2**attempt))
-        raise ProfinetClientError(
+        raise BackendUnavailable(
             f"Cannot reach the mock IO device at {self.endpoint} ({last or 'timeout'}; {attempts} attempt(s)). "
             "Start it with `uv run --directory profinet-mock-server profinet-mock-server`, or check "
             "PROFINET_MOCK_HOST / PROFINET_MOCK_PORT."
@@ -236,14 +244,13 @@ class MockBackend:
                 raise self._unknown(op, problem)
             raise ProfinetClientError(f"The mock answered {op!r} badly: {problem}")
         if not response["success"]:
-            raise ProfinetClientError(f"Mock IO device: {response.get('error') or 'request failed'}")
+            raise DeviceRejected(f"Mock IO device: {response.get('error') or 'request failed'}")
         return response.get("data")
 
     def _unknown(self, op: str, problem: str) -> OutcomeUnknown:
         return OutcomeUnknown(
-            f"No usable reply from the mock IO device at {self.endpoint} to {op!r} ({problem}); the change may "
-            "have been applied. It was not sent again: check the device state (for example read it back) "
-            "before retrying."
+            f"No usable reply from the mock IO device at {self.endpoint} to {op!r} ({problem}). The change "
+            "may have been applied; check before retrying (for example read it back). It was not sent again."
         )
 
     @staticmethod
