@@ -13,6 +13,7 @@ import sys
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from importlib.metadata import version
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +23,24 @@ from helpers import SAMPLE_GSDML, MockProcess, clean_env
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from profinet_mcp import __version__
-
 pytestmark = [pytest.mark.anyio, pytest.mark.integration]
+
+EXPECTED_TOOLS = {
+    "discover_devices",
+    "get_device_info",
+    "set_device_name",
+    "set_device_ip",
+    "identify_device",
+    "read_io_data",
+    "write_io_data",
+    "load_gsd_file",
+    "list_devices",
+    "read_device_by_alias",
+    "write_device_by_alias",
+    "ping",
+    "get_connection_status",
+    "test_device_communication",
+}
 
 MAC = "00:11:22:33:44:55"
 
@@ -81,7 +97,7 @@ async def test_every_tool_against_the_mock(tmp_path: Path, mock_process: MockPro
             DEVICE_MAP_FILE=str(device_map),
         ) as (session, init):
             assert init.serverInfo.name == "PROFINET MCP Server"
-            assert init.serverInfo.version == __version__
+            assert init.serverInfo.version == version("profinet-mcp")
 
             tools = (await session.list_tools()).tools
             assert len(tools) == 14
@@ -213,39 +229,83 @@ class RawServer:
             self.proc.wait(timeout=10)
 
 
-@pytest.mark.parametrize("backend", ["mock", "network", "none"])
-def test_stdout_carries_only_json_rpc(tmp_path: Path, mock_process: MockProcess, backend: str) -> None:
-    server = RawServer(
-        tmp_path, PROFINET_BACKEND=backend, PROFINET_MOCK_PORT=str(mock_process.port), PROFINET_INTERFACE="lo0"
+def every_tool_call(device_map: Path) -> list[tuple[str, dict[str, Any]]]:
+    """One valid call of each of the 14 tools."""
+    return [
+        ("ping", {}),
+        ("get_connection_status", {}),
+        ("discover_devices", {"timeout": 0.5}),
+        ("get_device_info", {"device_name": "pn-device-01"}),
+        ("test_device_communication", {"device_name": "pn-device-01"}),
+        ("read_io_data", {"device_name": "pn-device-01", "slot": 1, "subslot": 1, "data_length": 8}),
+        ("write_io_data", {"device_name": "pn-device-01", "slot": 1, "subslot": 2, "data": [1, 2]}),
+        ("list_devices", {}),
+        ("read_device_by_alias", {"alias": "outputs"}),
+        ("write_device_by_alias", {"alias": "outputs", "data": [3]}),
+        ("load_gsd_file", {"filepath": str(SAMPLE_GSDML)}),
+        ("identify_device", {"device_mac": MAC, "duration_s": 1}),
+        ("set_device_ip", {"device_mac": MAC, "ip_address": "192.168.1.121", "subnet_mask": "255.255.255.0"}),
+        ("set_device_name", {"device_mac": MAC, "name": "stdout-check"}),
+    ]
+
+
+STDOUT_CASES = {
+    "mock": {"PROFINET_BACKEND": "mock"},
+    # Rule: the server starts and answers cleanly with no device reachable.
+    "mock-unreachable": {"PROFINET_BACKEND": "mock", "PROFINET_MOCK_PORT": "1", "PROFINET_MAX_RETRIES": "0"},
+    # Loads Scapy; the interface lookup fails before any frame is built, so no raw socket is opened.
+    "network": {"PROFINET_BACKEND": "network", "PROFINET_INTERFACE": "nonexistent0"},
+    "none": {"PROFINET_BACKEND": "none"},
+}
+
+
+@pytest.mark.parametrize("case", list(STDOUT_CASES))
+def test_stdout_carries_only_json_rpc(tmp_path: Path, mock_process: MockProcess, case: str) -> None:
+    """Every stdout line is JSON-RPC while every tool runs. Unbuffered, so a stray print() cannot hide."""
+    device_map = tmp_path / "devices.json"
+    device_map.write_text(
+        json.dumps({"outputs": {"device_name": "pn-device-01", "slot": 1, "subslot": 2, "data_length": 4}})
     )
+    env = {
+        "PROFINET_MOCK_PORT": str(mock_process.port),
+        "PROFINET_WRITES_ENABLED": "true",
+        "PROFINET_CONFIG_CMDS_ENABLED": "true",
+        "DEVICE_MAP_FILE": str(device_map),
+        **STDOUT_CASES[case],
+        "PYTHONUNBUFFERED": "1",
+    }
+    server = RawServer(tmp_path, **env)
+    calls = every_tool_call(device_map)
+    assert {name for name, _ in calls} == EXPECTED_TOOLS
+    results: dict[str, dict] = {}
     try:
         init = server.request(
             1,
             "initialize",
             {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "pytest", "version": "0"}},
         )
-        assert init["result"]["serverInfo"]["version"] == __version__
+        assert init["result"]["serverInfo"]["version"] == version("profinet-mcp")
         server.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         assert len(server.request(2, "tools/list")["result"]["tools"]) == 14
-        calls = [
-            ("ping", {}),
-            ("get_connection_status", {}),
-            ("read_io_data", {"device_name": "pn-device-01", "slot": 1, "subslot": 1, "data_length": 8}),
-            ("read_io_data", {"device_name": "pn-device-01", "slot": "x", "subslot": 1, "data_length": 8}),
-            ("write_io_data", {"device_name": "pn-device-01", "slot": 1, "subslot": 2, "data": [1]}),
-            ("load_gsd_file", {"filepath": str(SAMPLE_GSDML)}),
-        ]
-        if backend != "network":  # network discovery would open a raw socket; tests never do that
-            calls.append(("discover_devices", {}))
         for offset, (name, arguments) in enumerate(calls, start=3):
             response = server.request(offset, "tools/call", {"name": name, "arguments": arguments})
-            envelope = json.loads(response["result"]["content"][0]["text"])
-            assert response["result"]["isError"] is False
-            assert envelope["meta"]["tool"] == name
+            assert response["result"]["isError"] is False, response
+            results[name] = json.loads(response["result"]["content"][0]["text"])
+            assert results[name]["meta"]["tool"] == name
     finally:
         server.close()
     assert server.stdout, "no output at all"
     for line in server.stdout:
         message = json.loads(line)  # every stdout line is a JSON-RPC message
         assert message.get("jsonrpc") == "2.0", line
-    assert any(f"backend={backend}" in line for line in server.stderr), "startup log should go to stderr"
+    assert any(f"backend={STDOUT_CASES[case]['PROFINET_BACKEND']}" in line for line in server.stderr)
+    if case == "mock":
+        failed = {name: result["error"] for name, result in results.items() if not result["success"]}
+        assert failed == {}, failed
+    elif case == "network":
+        assert "nonexistent0" in results["discover_devices"]["error"]
+        assert results["read_io_data"]["meta"]["not_implemented"] is True
+    else:  # nothing reachable: device tools fail cleanly, local tools still work
+        assert results["ping"]["success"] and results["load_gsd_file"]["success"]
+        assert not results["discover_devices"]["success"]
+        assert results["write_io_data"]["meta"]["outcome"] == "not_sent"
