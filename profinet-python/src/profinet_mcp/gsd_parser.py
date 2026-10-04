@@ -66,6 +66,11 @@ _SCHEMA_VERSION_RE = re.compile(r"GSDML-DeviceProfile-(V\d+\.\d+)\.xsd", re.IGNO
 _FILENAME_VERSION_RE = re.compile(r"^GSDML-(V\d+\.\d+)-", re.IGNORECASE)
 
 
+def _xml_parser() -> etree.XMLParser:
+    """A parser that never expands entities, loads DTDs or touches the network (XXE, entity bombs)."""
+    return etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False)
+
+
 class GSDMLError(ValueError):
     """The file exists but is not a usable GSDML file."""
 
@@ -157,9 +162,8 @@ class GSDParser:
         path = self.resolve(filepath)
         if path.stat().st_size > MAX_FILE_BYTES:
             raise GSDMLError(f"{path} is larger than {MAX_FILE_BYTES // (1024 * 1024)} MiB")
-        parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False, huge_tree=False)
         try:
-            root = etree.parse(str(path), parser).getroot()
+            root = etree.parse(str(path), _xml_parser()).getroot()
         except etree.XMLSyntaxError as exc:
             raise GSDMLError(f"{path.name} is not well-formed XML: {exc}") from exc
         namespace = etree.QName(root).namespace

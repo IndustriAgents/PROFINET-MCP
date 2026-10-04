@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import http.server
 import os
 import shutil
+import threading
+import time
 
 import pytest
 from helpers import SAMPLE_GSDML
+from lxml import etree
 
+from profinet_mcp import gsd_parser
 from profinet_mcp.gsd_parser import GSDML_NAMESPACE, GSDMLError, GSDParser
 
 
@@ -107,23 +112,159 @@ def test_non_gsdml_files_are_rejected(tmp_path, content: bytes, fragment: str) -
         GSDParser().load(path)
 
 
-def test_external_entities_are_not_resolved(tmp_path) -> None:
-    secret = tmp_path / "secret.txt"
-    secret.write_text("TOP-SECRET")
+# -- hostile XML ---------------------------------------------------------------------------
+#
+# Entities go into element text (<ProfileRevision>). An external entity inside an *attribute* value is a
+# well-formedness error for every parser, so a test built that way could never fail.
+
+SECRET = "TOP-SECRET-7f3a91"
+
+
+def with_doctype(doctype: str, revision: str) -> bytes:
     text = SAMPLE_GSDML.read_bytes().decode("latin-1")
-    text = text.replace(
-        "<ISO15745Profile ", f'<!DOCTYPE ISO15745Profile [<!ENTITY x SYSTEM "file://{secret}">]>\n<ISO15745Profile ', 1
-    )
-    text = text.replace(
-        'Value="IndustriAgents Test Fixtures"/>\n    </DeviceIdentity>', 'Value="&x;"/>\n    </DeviceIdentity>'
-    )
+    text = text.replace("<ISO15745Profile ", doctype + "\n<ISO15745Profile ", 1)
+    text = text.replace("<ProfileRevision>1.00</ProfileRevision>", f"<ProfileRevision>{revision}</ProfileRevision>", 1)
+    return text.encode("latin-1")
+
+
+def unhardened_parser() -> etree.XMLParser:
+    return etree.XMLParser(resolve_entities=True, no_network=False, load_dtd=True, huge_tree=True)
+
+
+@pytest.fixture
+def loopback_http():
+    """A local HTTP server that records every fetch (to prove nothing is downloaded)."""
+    hits: list[str] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - http.server API
+            hits.append(self.path)
+            body = b'<!ENTITY x "FETCHED-OVER-HTTP">' if self.path.endswith(".dtd") else b"FETCHED-OVER-HTTP"
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}", hits
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def secret_file(tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text(SECRET)
+    return secret
+
+
+def assert_entity_not_expanded(tmp_path, doctype: str) -> None:
     path = tmp_path / "xxe.xml"
-    path.write_bytes(text.encode("latin-1"))
+    path.write_bytes(with_doctype(doctype, "&x;"))
+    entry = GSDParser().load(path)  # must parse: refusing is not what is being tested here
+    assert SECRET not in repr(entry)
+    assert entry.metadata["profile_revision"] is None
+    assert len(entry.modules) == 4  # the rest of the file is still read
+
+
+def file_entity(tmp_path) -> str:
+    """Internal subset declaring an external entity that points at a local secret."""
+    return f'<!DOCTYPE ISO15745Profile [<!ENTITY x SYSTEM "file://{secret_file(tmp_path)}">]>'
+
+
+def external_dtd(tmp_path) -> str:
+    """External DTD (a local file) whose entity carries the secret."""
+    dtd = tmp_path / "ext.dtd"
+    dtd.write_text(f'<!ENTITY x "{SECRET}">')
+    return f'<!DOCTYPE ISO15745Profile SYSTEM "file://{dtd}">'
+
+
+@pytest.mark.parametrize("make_doctype", [file_entity, external_dtd], ids=["file-entity", "external-dtd-file"])
+def test_entities_are_not_expanded(tmp_path, make_doctype) -> None:
+    assert_entity_not_expanded(tmp_path, make_doctype(tmp_path))
+
+
+@pytest.mark.parametrize("make_doctype", [file_entity, external_dtd], ids=["file-entity", "external-dtd-file"])
+def test_xxe_checks_fail_against_an_unhardened_parser(tmp_path, monkeypatch, make_doctype) -> None:
+    """Control: with a permissive parser the secret leaks, so the checks above are able to fail."""
+    monkeypatch.setattr(gsd_parser, "_xml_parser", unhardened_parser)
+    with pytest.raises(AssertionError):
+        assert_entity_not_expanded(tmp_path, make_doctype(tmp_path))
+
+
+LAUGHS = (
+    '<!DOCTYPE ISO15745Profile [<!ENTITY a "aaaaaaaaaa">'
+    + "".join(f'<!ENTITY {chr(98 + i)} "' + f"&{chr(97 + i)};" * 10 + '">' for i in range(9))
+    + "]>"
+)
+
+
+@pytest.mark.parametrize(
+    ("doctype", "revision"),
+    [
+        (LAUGHS, "&j;"),  # billion laughs: 10^10 bytes if expanded
+        ('<!DOCTYPE ISO15745Profile [<!ENTITY x "' + "A" * 100_000 + '">]>', "&x;" * 2000),  # quadratic blowup
+    ],
+    ids=["billion-laughs", "quadratic"],
+)
+def test_entity_expansion_bombs_are_harmless(tmp_path, doctype: str, revision: str) -> None:
+    path = tmp_path / "bomb.xml"
+    path.write_bytes(with_doctype(doctype, revision))
+    started = time.perf_counter()
     try:
         entry = GSDParser().load(path)
-    except GSDMLError:
-        return  # refusing the file is fine too
-    assert "TOP-SECRET" not in repr(entry.metadata)
+    except GSDMLError as exc:
+        assert "entity" in str(exc).lower()  # refused by libxml2's amplification limit
+    else:
+        assert entry.metadata["profile_revision"] is None  # not expanded
+    assert time.perf_counter() - started < 5
+
+
+def network_cases(base: str) -> dict[str, tuple[str, str]]:
+    return {
+        "external-dtd": (f'<!DOCTYPE ISO15745Profile SYSTEM "{base}/ext.dtd">', "&x;"),
+        "parameter-entity": (f'<!DOCTYPE ISO15745Profile [<!ENTITY % p SYSTEM "{base}/p.dtd"> %p;]>', "&x;"),
+        "general-entity": (f'<!DOCTYPE ISO15745Profile [<!ENTITY x SYSTEM "{base}/e.txt">]>', "&x;"),
+    }
+
+
+def parse_network_cases(tmp_path, base: str) -> list[str]:
+    seen = []
+    for name, (doctype, revision) in network_cases(base).items():
+        path = tmp_path / f"{name}.xml"
+        path.write_bytes(with_doctype(doctype, revision))
+        try:
+            entry = GSDParser().load(path)
+        except GSDMLError:
+            continue
+        seen.append(repr(entry))
+    return seen
+
+
+def test_no_network_access_while_parsing(tmp_path, loopback_http) -> None:
+    # The libxml2 bundled with lxml 6 has no HTTP client; no_network=True keeps a build that has one
+    # from fetching. The control below runs only where fetching is possible at all.
+    base, hits = loopback_http
+    parsed = parse_network_cases(tmp_path, base)
+    assert hits == []
+    assert not any("FETCHED-OVER-HTTP" in text for text in parsed)
+
+
+@pytest.mark.skipif(
+    "http" not in getattr(etree, "LIBXML_FEATURES", ()),
+    reason="this libxml2 build has no HTTP client, so no parser setting can fetch over the network",
+)
+def test_network_check_fails_against_an_unhardened_parser(tmp_path, loopback_http, monkeypatch) -> None:
+    """Control: an unhardened parser does fetch from the listener, so the check above can fail."""
+    monkeypatch.setattr(gsd_parser, "_xml_parser", unhardened_parser)
+    base, hits = loopback_http
+    parse_network_cases(tmp_path, base)
+    assert hits, "the unhardened control parser should have fetched something"
 
 
 def test_cache_notices_edits(tmp_path) -> None:
