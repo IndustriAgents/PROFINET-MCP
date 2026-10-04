@@ -5,7 +5,8 @@ from __future__ import annotations
 import subprocess
 import sys
 
-from helpers import clean_env
+import pytest
+from helpers import PROJECT_DIR, clean_env
 
 from profinet_mcp import __version__
 
@@ -57,7 +58,10 @@ def test_missing_env_file_is_an_error(tmp_path) -> None:
     assert "does not exist" in result.stderr
 
 
-def test_discovered_dotenv_switches_are_ignored_in_a_real_launch(tmp_path) -> None:
+@pytest.mark.skipif(
+    (PROJECT_DIR / ".env").exists(), reason="a developer's profinet-python/.env would change the server's settings"
+)
+def test_working_directory_dotenv_is_not_read_in_a_real_launch(tmp_path) -> None:
     """The way an MCP client launches the server: cwd is the client's project, which may hold a .env."""
     (tmp_path / ".env").write_text("PROFINET_BACKEND=mock\nPROFINET_WRITES_ENABLED=true\n")
     result = subprocess.run(
@@ -69,6 +73,6 @@ def test_discovered_dotenv_switches_are_ignored_in_a_real_launch(tmp_path) -> No
         text=True,
         timeout=30,
     )
-    assert "warning: ignoring PROFINET_WRITES_ENABLED" in result.stderr
-    assert "backend=mock" in result.stderr and "writes disabled" in result.stderr
+    assert f"not reading {tmp_path / '.env'}" in result.stderr or "not reading" in result.stderr
+    assert "backend=none" in result.stderr and "writes disabled" in result.stderr
     assert result.stdout == ""

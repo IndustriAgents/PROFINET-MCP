@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,14 +29,31 @@ ALL_KEYS = (
 )
 
 
+FOREIGN_KEYS = ("PATH", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "PYTHONPATH", "SCAPY_USE_LIBPCAP", "FASTMCP_LOG_LEVEL")
+
+
 @pytest.fixture
 def isolated_env(monkeypatch, tmp_path):
-    """No PROFINET settings in os.environ, cwd in an empty directory; undoes whatever load_dotenv adds."""
-    for key in ALL_KEYS:
+    """No PROFINET settings in os.environ, cwd in an empty directory, and a fake source checkout.
+
+    ``isolated_env.project`` is a throwaway ``profinet-python/`` whose package directory the CLI is
+    pointed at, so tests can write its .env without touching the real repository. ``.cwd`` is the
+    working directory (outside the project). Whatever the CLI adds to os.environ is undone.
+    """
+    for key in (*ALL_KEYS, *(k.lower() for k in ALL_KEYS), "LD_PRELOAD", "DYLD_INSERT_LIBRARIES", "SCAPY_USE_LIBPCAP"):
         monkeypatch.setenv(key, "placeholder")
         monkeypatch.delenv(key)
-    monkeypatch.chdir(tmp_path)
-    return tmp_path
+    for key in ("PATH", "PYTHONPATH", "FASTMCP_LOG_LEVEL"):
+        monkeypatch.setenv(key, os.environ.get(key, ""))  # restored afterwards whatever happens
+    project = tmp_path / "checkout" / "profinet-python"
+    package = project / "src" / "profinet_mcp"
+    package.mkdir(parents=True)
+    (project / "pyproject.toml").write_text('[project]\nname = "profinet-mcp"\n')
+    monkeypatch.setattr(cli, "PACKAGE_DIR", package)
+    cwd = tmp_path / "client-project" / "sub"
+    cwd.mkdir(parents=True)
+    monkeypatch.chdir(cwd)
+    return SimpleNamespace(project=project, cwd=cwd, dotenv=project / ".env")
 
 
 def test_defaults_are_safe() -> None:
@@ -79,9 +97,9 @@ def test_unusable_settings_are_rejected(env: dict, fragment: str) -> None:
 def test_cli_reads_every_setting_from_dotenv(isolated_env, monkeypatch, capsys) -> None:
     """Regression: ProfinetConfig used to read os.environ at import time, before load_dotenv().
 
-    A discovered .env sets connection settings, but its safety switches are ignored with a warning.
+    profinet-python/.env sets connection settings, but its safety switches are ignored with a warning.
     """
-    (isolated_env / ".env").write_text(
+    isolated_env.dotenv.write_text(
         "\n".join(
             [
                 "PROFINET_BACKEND=mock",
@@ -143,7 +161,7 @@ def run_cli(monkeypatch, argv: list[str]):
 
 def test_cli_env_file_option(isolated_env, monkeypatch, capsys) -> None:
     """An explicit --env-file is trusted, safety switches included."""
-    env_file = isolated_env / "custom.env"
+    env_file = isolated_env.cwd / "custom.env"
     env_file.write_text(
         "PROFINET_BACKEND=network\nPROFINET_INTERFACE=en7\n"
         "PROFINET_WRITES_ENABLED=true\nPROFINET_CONFIG_CMDS_ENABLED=true\n"
@@ -155,29 +173,120 @@ def test_cli_env_file_option(isolated_env, monkeypatch, capsys) -> None:
     assert "ignoring" not in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("name", ["PROFINET_WRITES_ENABLED", "PROFINET_CONFIG_CMDS_ENABLED", "PROFINET_FUTURE_ENABLED"])
-def test_discovered_dotenv_cannot_turn_on_a_safety_switch(isolated_env, monkeypatch, capsys, name: str) -> None:
-    monkeypatch.setenv("PROFINET_FUTURE_ENABLED", "placeholder")
-    monkeypatch.delenv("PROFINET_FUTURE_ENABLED")
-    (isolated_env / ".env").write_text(f"PROFINET_BACKEND=mock\n{name}=true\n")
+# -- rule 3c: the implicit .env is only profinet-python/.env ------------------------------------
+
+
+@pytest.mark.parametrize("where", ["cwd", "parent", "grandparent"])
+def test_dotenv_in_working_directory_or_parents_is_not_read(isolated_env, monkeypatch, capsys, where: str) -> None:
+    target = {"cwd": isolated_env.cwd, "parent": isolated_env.cwd.parent, "grandparent": isolated_env.cwd.parent.parent}
+    (target[where] / ".env").write_text("PROFINET_BACKEND=mock\nPROFINET_MOCK_PORT=5999\nPROFINET_WRITES_ENABLED=1\n")
     config = run_cli(monkeypatch, [])
-    assert config.backend == "mock"  # connection settings still apply
+    assert (config.backend, config.mock_port, config.writes_enabled) == ("none", 5600, False)
+    if where == "cwd":
+        assert "not reading" in capsys.readouterr().err
+
+
+def test_project_dotenv_is_found_from_the_package_source(isolated_env) -> None:
+    assert cli.project_dir() == isolated_env.project.resolve()
+    assert cli.project_dotenv() is None
+    isolated_env.dotenv.write_text("PROFINET_BACKEND=mock\n")
+    assert cli.project_dotenv() == isolated_env.dotenv.resolve()
+
+
+def test_installed_package_has_no_implicit_dotenv(tmp_path) -> None:
+    package = tmp_path / "venv" / "lib" / "python3.11" / "site-packages" / "profinet_mcp"
+    package.mkdir(parents=True)
+    (package.parent / ".env").write_text("PROFINET_BACKEND=mock\n")
+    (package.parent / "pyproject.toml").write_text('[project]\nname = "profinet-mcp"\n')
+    assert cli.project_dir(package) is None and cli.project_dotenv(package) is None
+
+
+def test_other_projects_are_not_mistaken_for_ours(tmp_path) -> None:
+    package = tmp_path / "other" / "src" / "profinet_mcp"
+    package.mkdir(parents=True)
+    (package.parent.parent / "pyproject.toml").write_text('[project]\nname = "something-else"\n')
+    assert cli.project_dir(package) is None
+
+
+def test_this_checkout_is_detected() -> None:
+    """In this repository (editable install) the project directory is profinet-python/ itself."""
+    from helpers import PROJECT_DIR
+
+    assert cli.project_dir() == PROJECT_DIR.resolve()
+
+
+# -- rules 3, 3a, 3b: what the implicit .env may set ------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "PROFINET_WRITES_ENABLED=true",
+        "profinet_writes_enabled=true",
+        "Profinet_Config_Cmds_Enabled=true",
+        "export PROFINET_WRITES_ENABLED=true",
+        'PROFINET_WRITES_ENABLED="true"',
+        "PROFINET_CONFIG_CMDS_ENABLED='1'",
+        "  profinet_future_enabled = yes",
+    ],
+)
+def test_project_dotenv_cannot_turn_on_a_safety_switch(isolated_env, monkeypatch, capsys, line: str) -> None:
+    isolated_env.dotenv.write_text(f"PROFINET_BACKEND=mock\n{line}\n")
+    config = run_cli(monkeypatch, [])
+    assert config.backend == "mock"  # its own non-gate settings still apply
     assert config.writes_enabled is False and config.config_cmds_enabled is False
-    assert name not in os.environ
-    assert f"warning: ignoring {name} from" in capsys.readouterr().err
+    assert not any(cli.is_safety_switch(cli.env_key(key)) for key in os.environ)
+    assert "ignoring" in capsys.readouterr().err
 
 
-def test_dotenv_in_a_parent_directory_is_also_untrusted(isolated_env, monkeypatch, capsys) -> None:
-    (isolated_env / ".env").write_text("PROFINET_WRITES_ENABLED=1\n")
-    child = isolated_env / "project" / "sub"
-    child.mkdir(parents=True)
-    monkeypatch.chdir(child)
-    assert run_cli(monkeypatch, []).writes_enabled is False
-    assert "ignoring PROFINET_WRITES_ENABLED" in capsys.readouterr().err
+class UpperCasingEnviron(dict):
+    """os.environ as on Windows: keys are case-insensitive and stored upper-cased."""
+
+    def __init__(self, data) -> None:
+        super().__init__({key.upper(): value for key, value in data.items()})
+
+    def __setitem__(self, key, value) -> None:
+        super().__setitem__(key.upper(), value)
+
+    def __getitem__(self, key):
+        return super().__getitem__(key.upper())
+
+    def __contains__(self, key) -> bool:
+        return super().__contains__(key.upper())
+
+    def get(self, key, default=None):
+        return super().get(key.upper(), default)
+
+
+@pytest.mark.parametrize("line", ["profinet_writes_enabled=true", "Profinet_Config_Cmds_Enabled=true"])
+def test_switches_stay_off_where_keys_are_upper_cased(isolated_env, monkeypatch, capsys, line: str) -> None:
+    """Rule 3a: on Windows profinet_writes_enabled=true would become PROFINET_WRITES_ENABLED."""
+    monkeypatch.setattr(os, "environ", UpperCasingEnviron(os.environ))
+    isolated_env.dotenv.write_text(f"PROFINET_BACKEND=mock\n{line}\n")
+    config = run_cli(monkeypatch, [])
+    assert config.writes_enabled is False and config.config_cmds_enabled is False
+    assert f"ignoring {line.split('=')[0]}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("key", FOREIGN_KEYS)
+def test_project_dotenv_only_sets_the_servers_own_variables(isolated_env, monkeypatch, capsys, key: str) -> None:
+    """Rule 3b: no PATH, LD_PRELOAD, DYLD_*, PYTHON*, SCAPY_* ... from an implicit .env."""
+    before = os.environ.get(key)
+    isolated_env.dotenv.write_text(f"PROFINET_BACKEND=mock\n{key}=/tmp/injected\n{key.lower()}=/tmp/injected\n")
+    config = run_cli(monkeypatch, [])
+    assert config.backend == "mock"
+    assert os.environ.get(key) == before
+    assert f"ignoring {key} from" in capsys.readouterr().err
+
+
+def test_own_keys_are_normalised(isolated_env, monkeypatch) -> None:
+    isolated_env.dotenv.write_text("profinet_backend=mock\nexport Profinet_Mock_Port=5611\ndevice_map_file=map.json\n")
+    config = run_cli(monkeypatch, [])
+    assert (config.backend, config.mock_port, str(config.device_map_path)) == ("mock", 5611, "map.json")
 
 
 def test_real_environment_can_enable_switches(isolated_env, monkeypatch, capsys) -> None:
-    (isolated_env / ".env").write_text("PROFINET_BACKEND=mock\n")
+    isolated_env.dotenv.write_text("PROFINET_BACKEND=mock\n")
     monkeypatch.setenv("PROFINET_WRITES_ENABLED", "true")
     monkeypatch.setenv("PROFINET_CONFIG_CMDS_ENABLED", "true")
     config = run_cli(monkeypatch, [])
@@ -186,9 +295,6 @@ def test_real_environment_can_enable_switches(isolated_env, monkeypatch, capsys)
 
 
 def test_real_environment_wins_over_dotenv(isolated_env, monkeypatch) -> None:
-    (isolated_env / ".env").write_text("PROFINET_WRITES_ENABLED=true\n")
-    monkeypatch.setenv("PROFINET_WRITES_ENABLED", "false")
-    captured = {}
-    monkeypatch.setattr(cli.ProfinetMCPServer, "run", lambda self: captured.setdefault("server", self))
-    cli.main([])
-    assert captured["server"].config.writes_enabled is False
+    isolated_env.dotenv.write_text("PROFINET_MOCK_PORT=5999\n")
+    monkeypatch.setenv("PROFINET_MOCK_PORT", "5700")
+    assert run_cli(monkeypatch, []).mock_port == 5700
