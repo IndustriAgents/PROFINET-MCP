@@ -62,6 +62,7 @@ def test_false_spellings(value: str) -> None:
         ({"PROFINET_WRITES_ENABLED": "sure"}, "not a boolean"),
         ({"PROFINET_BACKEND": "tcp"}, "PROFINET_BACKEND"),
         ({"PROFINET_TIMEOUT": "fast"}, "not a valid number"),
+        ({"PROFINET_DCP_TIMEOUT": "0.1"}, "between 0.5 and 60"),
         ({"PROFINET_MOCK_PORT": "70000"}, "between 1 and 65535"),
         ({"PROFINET_MAX_RETRIES": "-1"}, "between 0 and 10"),
         ({"PROFINET_CONTROLLER_IP": "plc"}, "IPv4"),

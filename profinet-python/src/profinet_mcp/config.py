@@ -111,7 +111,7 @@ class ProfinetConfig:
             controller_ip=controller_ip,
             network_cidr=network,
             dcp_port=int(_env_number(env, "PROFINET_DCP_PORT", 34964, int, 1, 65535)),
-            dcp_timeout=float(_env_number(env, "PROFINET_DCP_TIMEOUT", 5.0, float, 0.1, 60)),
+            dcp_timeout=float(_env_number(env, "PROFINET_DCP_TIMEOUT", 5.0, float, 0.5, 60)),
             timeout=float(_env_number(env, "PROFINET_TIMEOUT", 10.0, float, 0.1, 600)),
             max_retries=int(_env_number(env, "PROFINET_MAX_RETRIES", 3, int, 0, 10)),
             retry_backoff_base=float(_env_number(env, "PROFINET_RETRY_BACKOFF_BASE", 0.5, float, 0, 30)),

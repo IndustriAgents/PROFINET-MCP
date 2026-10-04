@@ -127,6 +127,14 @@ async def test_every_tool_has_a_description_and_schema() -> None:
         ("read_io_data", {"device_name": "   ", "slot": 1, "subslot": 1, "data_length": 4}, "non-empty"),
         ("discover_devices", {"timeout": -1}, "timeout"),
         ("discover_devices", {"timeout": "soon"}, "timeout"),
+        ("discover_devices", {"timeout": 0.0001}, "timeout: Input should be greater than or equal to 0.5"),
+        ("discover_devices", {"timeout": True}, "timeout"),
+        ("discover_devices", {"timeout": "5"}, "timeout"),
+        ("read_io_data", {"device_name": "x", "slot": True, "subslot": 1, "data_length": 4}, "slot"),
+        ("read_io_data", {"device_name": "x", "slot": 1, "subslot": "1", "data_length": 4}, "subslot"),
+        ("read_io_data", {"device_name": "x", "slot": 1, "subslot": 1, "data_length": 8.0}, "data_length"),
+        ("identify_device", {"device_mac": MAC, "duration_s": "5"}, "duration_s"),
+        ("identify_device", {"device_mac": MAC, "duration_s": 5.0}, "duration_s"),
         ("identify_device", {"device_mac": "zz:11:22:33:44:55"}, "not a MAC address"),
         ("identify_device", {"device_mac": "01:00:5e:00:00:01"}, "multicast"),
         ("identify_device", {"device_mac": MAC, "duration_s": 0}, "duration_s"),
@@ -143,12 +151,27 @@ async def test_bad_arguments_are_envelopes(tool: str, arguments: dict, fragment:
     assert backend.calls == []
 
 
-@pytest.mark.parametrize("data", [[256], [-1], ["a"], [], [1.5]])
+@pytest.mark.parametrize("data", [[256], [-1], ["a"], [], [1.5], [True], ["7"], [2.0]])
 async def test_write_values_are_range_checked_not_masked(data) -> None:
     server, backend = make_server(writes_enabled=True)
     result = await call(server, "write_io_data", device_name="x", slot=1, subslot=1, data=data)
     assert result["success"] is False and "Invalid arguments" in result["error"]
-    assert backend.calls == []  # before the fix 256 was silently written as 0
+    assert backend.calls == []  # before the fix 256 was silently written as 0, and True/"7"/2.0 coerced
+
+
+async def test_lax_coercion_is_rejected() -> None:
+    """Regression: slot=True, subslot="1", data=[True, "7", 2.0] used to write b"\\x01\\x07\\x02" to slot 1."""
+    server, backend = make_server(writes_enabled=True)
+    result = await call(server, "write_io_data", device_name="x", slot=True, subslot="1", data=[True, "7", 2.0])
+    assert result["success"] is False
+    assert {p["argument"] for p in result["meta"]["invalid_arguments"]} == {
+        "slot",
+        "subslot",
+        "data.0",
+        "data.1",
+        "data.2",
+    }
+    assert backend.calls == []
 
 
 # -- safety switches ----------------------------------------------------------------------

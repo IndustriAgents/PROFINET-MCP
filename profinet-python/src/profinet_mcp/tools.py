@@ -48,22 +48,32 @@ DeviceRef = Annotated[
     Field(min_length=1, max_length=240, description="Station name, IP address or MAC address of the device"),
 ]
 DeviceMac = Annotated[str, Field(min_length=1, max_length=64, description="MAC address, e.g. 00:11:22:33:44:55")]
+# Numbers are strict: true, "1" or 2.0 are rejected rather than coerced into a slot or a byte value.
 Slot = Annotated[
-    int, Field(ge=0, le=validation.MAX_SLOT, description="Slot number (slot 0 is the device access point)")
+    int,
+    Field(strict=True, ge=0, le=validation.MAX_SLOT, description="Slot number (slot 0 is the device access point)"),
 ]
-Subslot = Annotated[int, Field(ge=1, le=validation.MAX_SUBSLOT, description="Subslot number, usually 1")]
+Subslot = Annotated[int, Field(strict=True, ge=1, le=validation.MAX_SUBSLOT, description="Subslot number, usually 1")]
 DataLength = Annotated[
-    int, Field(ge=1, le=validation.MAX_IO_BYTES, description=f"Bytes to read (1-{validation.MAX_IO_BYTES})")
+    int,
+    Field(strict=True, ge=1, le=validation.MAX_IO_BYTES, description=f"Bytes to read (1-{validation.MAX_IO_BYTES})"),
 ]
 ByteValues = Annotated[
-    list[Annotated[int, Field(ge=0, le=255)]],
-    Field(min_length=1, max_length=validation.MAX_IO_BYTES, description="Bytes to write, each 0-255"),
+    list[Annotated[int, Field(strict=True, ge=0, le=255)]],
+    Field(min_length=1, max_length=validation.MAX_IO_BYTES, description="Bytes to write, each an integer 0-255"),
 ]
 DiscoveryTimeout = Annotated[
     float | None,
-    Field(gt=0, le=60, description="Seconds to wait for answers (default: PROFINET_DCP_TIMEOUT, 5)"),
+    Field(
+        strict=True,
+        ge=0.5,
+        le=60,
+        description="Seconds to wait for answers, 0.5-60 (default: PROFINET_DCP_TIMEOUT, 5)",
+    ),
 ]
-IdentifySeconds = Annotated[int, Field(ge=1, le=600, description="How long the device should flash, in seconds")]
+IdentifySeconds = Annotated[
+    int, Field(strict=True, ge=1, le=600, description="How long the device should flash, in seconds")
+]
 StationName = Annotated[
     str, Field(min_length=1, max_length=240, description="New station name: lowercase a-z, 0-9, '-' and '.'")
 ]
