@@ -241,6 +241,17 @@ async def test_config_commands_need_both_switches(switches: dict, missing: str) 
     assert backend.calls == []
 
 
+async def test_client_refuses_writes_on_its_own() -> None:
+    """Defence in depth: the client checks PROFINET_WRITES_ENABLED even if a tool forgot to."""
+    from profinet_mcp.pn_client import OperationRefused
+
+    backend = RecordingBackend()
+    client = ProfinetClient(ProfinetConfig(backend="mock", config_cmds_enabled=True), backend)
+    with pytest.raises(OperationRefused, match="PROFINET_WRITES_ENABLED"):
+        await client.write_io_data("x", 1, 2, b"\x01")
+    assert backend.calls == []
+
+
 async def test_client_gates_identify_too() -> None:
     """The client refuses on its own, so a caller that bypasses the tools cannot flash the LED either."""
     from profinet_mcp.pn_client import OperationRefused
