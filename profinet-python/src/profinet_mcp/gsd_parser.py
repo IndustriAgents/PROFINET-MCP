@@ -5,6 +5,8 @@ Real GSDML files put every element in the namespace
 identity in ``ProfileBody/DeviceIdentity``, the device access points in
 ``DeviceAccessPointList`` and the pluggable modules in ``ModuleList/ModuleItem``.
 Display names are ``TextId`` references into ``ExternalTextList/PrimaryLanguage``.
+Submodules are either fixed (``VirtualSubmoduleList`` inside a module) or pluggable
+(``UseableSubmodules/SubmoduleItemRef`` pointing into ``ApplicationProcess/SubmoduleList``).
 """
 
 from __future__ import annotations
@@ -81,6 +83,8 @@ class GSDCacheEntry:
     modules: list[dict[str, Any]]
     metadata: dict[str, Any]
     device_access_points: list[dict[str, Any]] = field(default_factory=list)
+    #: Pluggable submodules from ApplicationProcess/SubmoduleList.
+    submodules: list[dict[str, Any]] = field(default_factory=list)
 
 
 class _Doc:
@@ -178,16 +182,23 @@ class GSDParser:
         if body is None or process is None:
             raise GSDMLError(f"{path.name} has no ProfileBody/ApplicationProcess")
 
+        catalog = {
+            sub.get("ID"): self._submodule(doc, sub)
+            for sub in doc.children(doc.find(process, "SubmoduleList"), "SubmoduleItem")
+        }
         daps = [
-            self._dap(doc, item)
+            self._dap(doc, item, catalog)
             for item in doc.children(doc.find(process, "DeviceAccessPointList"), "DeviceAccessPointItem")
         ]
-        modules = [self._module(doc, item) for item in doc.children(doc.find(process, "ModuleList"), "ModuleItem")]
+        modules = [
+            self._module(doc, item, catalog) for item in doc.children(doc.find(process, "ModuleList"), "ModuleItem")
+        ]
         return GSDCacheEntry(
             path=path,
             modules=modules,
             metadata=self._metadata(doc, root, body, daps, path),
             device_access_points=daps,
+            submodules=list(catalog.values()),
         )
 
     # -- sections ---------------------------------------------------------------
@@ -225,7 +236,7 @@ class GSDParser:
             "order_number": doc.value(info, "OrderNumber"),
         }
 
-    def _dap(self, doc: _Doc, item: etree._Element) -> dict[str, Any]:
+    def _dap(self, doc: _Doc, item: etree._Element, catalog: dict[str, dict[str, Any]]) -> dict[str, Any]:
         info = doc.find(item, "ModuleInfo")
         io_config = doc.find(item, "IOConfigData")
         system = doc.find(item, "SystemDefinedSubmoduleList")
@@ -263,16 +274,38 @@ class GSDParser:
                 for ref in doc.children(doc.find(item, "UseableModules"), "ModuleItemRef")
             ],
             "submodules": [self._submodule(doc, sub) for sub in self._virtual_submodules(doc, item)],
+            **self._pluggable(doc, item, catalog),
             "system_submodules": system_submodules,
         }
 
-    def _module(self, doc: _Doc, item: etree._Element) -> dict[str, Any]:
+    def _module(self, doc: _Doc, item: etree._Element, catalog: dict[str, dict[str, Any]]) -> dict[str, Any]:
         return {
             "id": item.get("ID"),
             "module_ident_number": item.get("ModuleIdentNumber"),
             **self._module_info(doc, item),
+            "physical_subslots": item.get("PhysicalSubslots"),
             "submodules": [self._submodule(doc, sub) for sub in self._virtual_submodules(doc, item)],
+            **self._pluggable(doc, item, catalog),
         }
+
+    @staticmethod
+    def _pluggable(doc: _Doc, item: etree._Element, catalog: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        """Resolve UseableSubmodules/SubmoduleItemRef against the SubmoduleList catalog."""
+        plugged: list[dict[str, Any]] = []
+        incomplete = False
+        for ref in doc.children(doc.find(item, "UseableSubmodules"), "SubmoduleItemRef"):
+            target = ref.get("SubmoduleItemTarget")
+            placement = {
+                "allowed_in_subslots": ref.get("AllowedInSubslots"),
+                "fixed_in_subslots": ref.get("FixedInSubslots"),
+                "used_in_subslots": ref.get("UsedInSubslots"),
+            }
+            if target in catalog:
+                plugged.append({**catalog[target], **placement})
+            else:
+                incomplete = True
+                plugged.append({"id": target, "unresolved": True, **placement})
+        return {"pluggable_submodules": plugged, "submodules_incomplete": incomplete}
 
     @staticmethod
     def _virtual_submodules(doc: _Doc, item: etree._Element) -> list[etree._Element]:
@@ -286,6 +319,7 @@ class GSDParser:
             "id": sub.get("ID"),
             "submodule_ident_number": sub.get("SubmoduleIdentNumber"),
             "name": doc.text_ref(doc.find(sub, "ModuleInfo", "Name")),
+            "order_number": doc.value(sub, "ModuleInfo", "OrderNumber"),
             "input_bytes": _total(inputs),
             "output_bytes": _total(outputs),
             "inputs": inputs,

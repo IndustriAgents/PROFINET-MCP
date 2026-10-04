@@ -40,6 +40,7 @@
             <ModuleItemRef ModuleItemTarget="IDM_DO8" AllowedInSlots="1..4"/>
             <ModuleItemRef ModuleItemTarget="IDM_AI2" AllowedInSlots="1..4"/>
             <ModuleItemRef ModuleItemTarget="IDM_AIO" AllowedInSlots="1..4" FixedInSlots="4"/>
+            <ModuleItemRef ModuleItemTarget="IDM_CARRIER" AllowedInSlots="1..4"/>
           </UseableModules>
           <VirtualSubmoduleList>
             <VirtualSubmoduleItem ID="IDS_DAP" SubmoduleIdentNumber="0x00000001" Writeable_IM_Records="1 2 3" MayIssueProcessAlarm="false">
@@ -158,7 +159,42 @@
             </VirtualSubmoduleItem>
           </VirtualSubmoduleList>
         </ModuleItem>
+        <ModuleItem ID="IDM_CARRIER" ModuleIdentNumber="0x00000050" PhysicalSubslots="1..2">
+          <ModuleInfo CategoryRef="CAT_DI">
+            <Name TextId="TOK_CARRIER_Name"/>
+            <InfoText TextId="TOK_CARRIER_Info"/>
+            <OrderNumber Value="IA-CAR2"/>
+          </ModuleInfo>
+          <UseableSubmodules>
+            <SubmoduleItemRef SubmoduleItemTarget="IDSM_PLUG_DI16" AllowedInSubslots="1..2"/>
+            <SubmoduleItemRef SubmoduleItemTarget="IDSM_PLUG_DO16" AllowedInSubslots="1..2" FixedInSubslots="2"/>
+          </UseableSubmodules>
+        </ModuleItem>
       </ModuleList>
+      <SubmoduleList>
+        <SubmoduleItem ID="IDSM_PLUG_DI16" SubmoduleIdentNumber="0x00000051" MayIssueProcessAlarm="false">
+          <IOData>
+            <Input Consistency="Item consistency">
+              <DataItem DataType="Unsigned16" TextId="TOK_PLUG_DI16_Data" UseAsBits="true"/>
+            </Input>
+          </IOData>
+          <ModuleInfo>
+            <Name TextId="TOK_PLUG_DI16_Name"/>
+            <OrderNumber Value="IA-PDI16"/>
+          </ModuleInfo>
+        </SubmoduleItem>
+        <SubmoduleItem ID="IDSM_PLUG_DO16" SubmoduleIdentNumber="0x00000052" MayIssueProcessAlarm="false">
+          <IOData>
+            <Output Consistency="Item consistency">
+              <DataItem DataType="Unsigned16" TextId="TOK_PLUG_DO16_Data" UseAsBits="true"/>
+            </Output>
+          </IOData>
+          <ModuleInfo>
+            <Name TextId="TOK_PLUG_DO16_Name"/>
+            <OrderNumber Value="IA-PDO16"/>
+          </ModuleInfo>
+        </SubmoduleItem>
+      </SubmoduleList>
       <CategoryList>
         <CategoryItem ID="CAT_DI" TextId="TOK_Cat_DI"/>
         <CategoryItem ID="CAT_DO" TextId="TOK_Cat_DO"/>
@@ -189,6 +225,12 @@
           <Text TextId="TOK_AIO_Name" Value="AIO 1xFloat"/>
           <Text TextId="TOK_AIO_In" Value="Process value with status"/>
           <Text TextId="TOK_AIO_Out" Value="Set point"/>
+          <Text TextId="TOK_CARRIER_Name" Value="Carrier 2x pluggable"/>
+          <Text TextId="TOK_CARRIER_Info" Value="Carrier module with two subslots for pluggable submodules"/>
+          <Text TextId="TOK_PLUG_DI16_Name" Value="DI 16x24VDC submodule"/>
+          <Text TextId="TOK_PLUG_DI16_Data" Value="Digital inputs 0-15"/>
+          <Text TextId="TOK_PLUG_DO16_Name" Value="DO 16x24VDC submodule"/>
+          <Text TextId="TOK_PLUG_DO16_Data" Value="Digital outputs 0-15"/>
           <Text TextId="TOK_Cat_DI" Value="Digital inputs"/>
           <Text TextId="TOK_Cat_DO" Value="Digital outputs"/>
           <Text TextId="TOK_Cat_AI" Value="Analog inputs"/>

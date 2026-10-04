@@ -38,7 +38,7 @@ def test_metadata_comes_from_device_identity(entry) -> None:
 
 def test_modules_are_module_items_with_resolved_names(entry) -> None:
     by_id = {module["id"]: module for module in entry.modules}
-    assert list(by_id) == ["IDM_DI8", "IDM_DO8", "IDM_AI2", "IDM_AIO"]
+    assert list(by_id) == ["IDM_DI8", "IDM_DO8", "IDM_AI2", "IDM_AIO", "IDM_CARRIER"]
 
     di8 = by_id["IDM_DI8"]
     assert di8["module_ident_number"] == "0x00000010"
@@ -55,6 +55,37 @@ def test_modules_are_module_items_with_resolved_names(entry) -> None:
     assert (aio["input_bytes"], aio["output_bytes"]) == (5, 4)  # Float32+Status8, OctetString Length=4
 
 
+def test_pluggable_submodules_are_resolved(entry) -> None:
+    """UseableSubmodules/SubmoduleItemRef point into ApplicationProcess/SubmoduleList."""
+    carrier = {module["id"]: module for module in entry.modules}["IDM_CARRIER"]
+    assert carrier["submodules"] == []  # no fixed (virtual) submodules
+    assert carrier["physical_subslots"] == "1..2"
+    assert carrier["submodules_incomplete"] is False
+    di16, do16 = carrier["pluggable_submodules"]
+    assert (di16["id"], di16["name"], di16["order_number"]) == ("IDSM_PLUG_DI16", "DI 16x24VDC submodule", "IA-PDI16")
+    assert (di16["input_bytes"], di16["output_bytes"], di16["allowed_in_subslots"]) == (2, 0, "1..2")
+    assert (do16["input_bytes"], do16["output_bytes"], do16["fixed_in_subslots"]) == (0, 2, "2")
+    assert [sub["id"] for sub in entry.submodules] == ["IDSM_PLUG_DI16", "IDSM_PLUG_DO16"]
+    others = [m for m in entry.modules if m["id"] != "IDM_CARRIER"]
+    assert all(m["pluggable_submodules"] == [] and m["submodules_incomplete"] is False for m in others)
+
+
+def test_unresolved_submodule_reference_is_flagged(tmp_path) -> None:
+    text = SAMPLE_GSDML.read_bytes().decode("latin-1")
+    text = text.replace('SubmoduleItemTarget="IDSM_PLUG_DO16"', 'SubmoduleItemTarget="IDSM_MISSING"')
+    path = tmp_path / "GSDML-V2.35-missing-ref.xml"
+    path.write_bytes(text.encode("latin-1"))
+    carrier = {m["id"]: m for m in GSDParser().load(path).modules}["IDM_CARRIER"]
+    assert carrier["submodules_incomplete"] is True
+    assert carrier["pluggable_submodules"][1] == {
+        "id": "IDSM_MISSING",
+        "unresolved": True,
+        "allowed_in_subslots": "1..2",
+        "fixed_in_subslots": "2",
+        "used_in_subslots": None,
+    }
+
+
 def test_device_access_point(entry) -> None:
     (dap,) = entry.device_access_points
     assert dap["id"] == "DAP_1"
@@ -64,7 +95,13 @@ def test_device_access_point(entry) -> None:
     assert dap["physical_slots"] == "0..4"
     assert dap["software_release"] == "V1.2.0"
     assert (dap["max_input_length"], dap["max_output_length"]) == (256, 256)
-    assert [m["module_id"] for m in dap["useable_modules"]] == ["IDM_DI8", "IDM_DO8", "IDM_AI2", "IDM_AIO"]
+    assert [m["module_id"] for m in dap["useable_modules"]] == [
+        "IDM_DI8",
+        "IDM_DO8",
+        "IDM_AI2",
+        "IDM_AIO",
+        "IDM_CARRIER",
+    ]
     assert dap["useable_modules"][3]["fixed_in_slots"] == "4"
     assert [(s["type"], s["subslot_number"], s["name"]) for s in dap["system_submodules"]] == [
         ("interface", 32768, "Interface"),
@@ -81,7 +118,7 @@ def test_unnamespaced_file_still_parses(tmp_path) -> None:
     path = tmp_path / "plain.xml"
     path.write_bytes(strip_namespace(SAMPLE_GSDML.read_bytes().decode("latin-1")).encode("latin-1"))
     entry = GSDParser().load(path)
-    assert len(entry.modules) == 4
+    assert len(entry.modules) == 5
     assert entry.metadata["vendor_id"] == "0x0F00"
     assert entry.metadata["namespace"] is None
 
@@ -169,7 +206,7 @@ def assert_entity_not_expanded(tmp_path, doctype: str) -> None:
     entry = GSDParser().load(path)  # must parse: refusing is not what is being tested here
     assert SECRET not in repr(entry)
     assert entry.metadata["profile_revision"] is None
-    assert len(entry.modules) == 4  # the rest of the file is still read
+    assert len(entry.modules) == 5  # the rest of the file is still read
 
 
 def file_entity(tmp_path) -> str:

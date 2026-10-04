@@ -125,7 +125,7 @@ async def test_every_tool_against_the_mock(tmp_path: Path, mock_process: MockPro
             assert by_alias["data"]["raw_data_hex"] == "09090304"
 
             gsd = await call(session, "load_gsd_file", filepath=str(SAMPLE_GSDML))
-            assert gsd["success"] is True and gsd["data"]["module_count"] == 4
+            assert gsd["success"] is True and gsd["data"]["module_count"] == 5
 
             flash = await call(session, "identify_device", device_mac=MAC, duration_s=2)
             assert flash["success"] is True and flash["meta"]["backend"] == "mock"

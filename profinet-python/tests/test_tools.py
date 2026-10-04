@@ -400,7 +400,8 @@ async def test_load_gsd_file_tool(tmp_path) -> None:
     server, _ = make_server(gsd_base_path=SAMPLE_GSDML.parent)
     result = await call(server, "load_gsd_file", filepath=SAMPLE_GSDML.name)
     assert result["success"] is True
-    assert result["data"]["module_count"] == 4
+    assert result["data"]["module_count"] == 5
+    assert [sub["id"] for sub in result["data"]["submodules"]] == ["IDSM_PLUG_DI16", "IDSM_PLUG_DO16"]
     assert result["data"]["metadata"]["vendor_id"] == "0x0F00"
     assert result["meta"] == {
         "tool": "load_gsd_file",

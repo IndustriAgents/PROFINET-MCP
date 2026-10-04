@@ -419,8 +419,10 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         """Parse a GSDML device description file: device identity, access points and modules.
 
         Returns metadata (vendor, vendor/device IDs, device name, GSDML version), the device access
-        points with their usable modules, and every module with its submodules and input/output sizes
-        in bytes (null when a data type's size is unknown). Relative paths are also looked up in
+        points with their usable modules, every module with its fixed submodules and its pluggable
+        submodules (resolved from the SubmoduleList; unresolved references are flagged and the module
+        gets submodules_incomplete=true), and input/output sizes in bytes (null when a data type's size
+        is unknown). Relative paths are also looked up in
         PROFINET_GSD_PATH. Files are cached and re-parsed when they change on disk.
         """
         meta: dict[str, Any] = {"source": "gsdml_file", "filepath": filepath}
@@ -441,6 +443,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
                 "device_access_points": entry.device_access_points,
                 "modules": entry.modules,
                 "module_count": len(entry.modules),
+                "submodules": entry.submodules,
             },
             meta,
         )
