@@ -309,3 +309,54 @@ def test_stdout_carries_only_json_rpc(tmp_path: Path, mock_process: MockProcess,
         assert results["ping"]["success"] and results["load_gsd_file"]["success"]
         assert not results["discover_devices"]["success"]
         assert results["write_io_data"]["meta"]["outcome"] == "not_sent"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="uses SIGKILL")
+@pytest.mark.parametrize("child", ["mock", "server"])
+def test_children_exit_when_the_test_process_is_killed(tmp_path: Path, child: str) -> None:
+    """Rule 11: SIGKILL the process that started the mock (or the MCP server); the child must exit too."""
+    import os
+    import signal
+    import textwrap
+    import time
+
+    from helpers import MOCK_SCRIPT
+
+    command = {
+        "mock": [sys.executable, str(MOCK_SCRIPT), "--port", "0", "--exit-on-stdin-eof"],
+        "server": [sys.executable, "-m", "profinet_mcp.cli"],
+    }[child]
+    parent_code = textwrap.dedent(
+        f"""
+        import subprocess, sys, time
+        child = subprocess.Popen({command!r}, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+        print(child.pid, flush=True)
+        time.sleep(600)
+        """
+    )
+    parent = subprocess.Popen([sys.executable, "-c", parent_code], cwd=tmp_path, stdout=subprocess.PIPE, text=True)
+    pid = None
+    try:
+        pid = int(parent.stdout.readline())
+        time.sleep(1.0)  # let the child start up
+        os.kill(parent.pid, signal.SIGKILL)
+        parent.wait(timeout=10)
+        deadline = time.monotonic() + float(os.environ.get("ORPHAN_TIMEOUT_S", "20"))
+        alive = True
+        while alive and time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+                time.sleep(0.1)
+            except ProcessLookupError:
+                alive = False
+        assert not alive, f"the {child} outlived the process that started it"
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.wait(timeout=10)
+        if pid is not None:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass

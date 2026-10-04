@@ -50,7 +50,11 @@ def envelope_of(result: Any) -> dict[str, Any]:
 
 
 class MockProcess:
-    """profinet-mock-server running as a subprocess on an OS-assigned port."""
+    """profinet-mock-server running as a subprocess on an OS-assigned port.
+
+    It watches its stdin (``--exit-on-stdin-eof``): if the test run is killed, the pipe closes and the
+    mock exits instead of lingering (suite rule 11).
+    """
 
     LISTEN_RE = re.compile(r"PROFINET mock listening on (?:\[(?P<v6>[^\]]+)\]|(?P<v4>[^:\s]+)):(?P<port>\d+)")
 
@@ -58,11 +62,21 @@ class MockProcess:
         self.lines: queue.Queue[str] = queue.Queue()
         self.output: list[str] = []
         self.proc = subprocess.Popen(
-            [sys.executable, str(MOCK_SCRIPT), "--host", "127.0.0.1", "--port", "0", "--update-interval", "3600"]
+            [
+                sys.executable,
+                str(MOCK_SCRIPT),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "0",
+                "--update-interval",
+                "3600",
+                "--exit-on-stdin-eof",
+            ]
             + list(extra_args),
             cwd=cwd,
             env=clean_env(),
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -99,6 +113,12 @@ class MockProcess:
         return self.connections()
 
     def stop(self) -> None:
+        if self.proc.stdin is not None and not self.proc.stdin.closed:
+            self.proc.stdin.close()  # the mock's own exit path; terminate() below is the fallback
+            try:
+                self.proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
         if self.proc.poll() is None:
             self.proc.terminate()
             try:
