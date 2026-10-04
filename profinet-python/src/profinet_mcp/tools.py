@@ -198,10 +198,18 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
     @server.tool()
     async def load_gsd_file(ctx: Context, filepath: str) -> Dict[str, Any]:  # noqa: ARG001
         try:
-            entry = resources.gsd_parser.load_cached(filepath)
+            entry, cached = resources.gsd_parser.load_cached(filepath)
         except Exception as exc:
             return _err(str(exc), {"filepath": filepath})
-        return _ok(data={"filepath": str(entry.path), "modules": entry.modules, "metadata": entry.metadata})
+        return _ok(
+            data={
+                "filepath": str(entry.path),
+                "metadata": entry.metadata,
+                "device_access_points": entry.device_access_points,
+                "modules": entry.modules,
+            },
+            meta={"cached": cached},
+        )
 
     @server.tool()
     async def list_devices(ctx: Context) -> Dict[str, Any]:  # noqa: ARG001
