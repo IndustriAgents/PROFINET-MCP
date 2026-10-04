@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field, ValidationError
@@ -35,6 +36,8 @@ from .pn_client import (
 )
 
 log = logging.getLogger(__name__)
+
+GSD_PARSE_DEADLINE_S = 30.0
 
 Envelope = dict[str, Any]
 
@@ -450,7 +453,13 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         """
         meta: dict[str, Any] = {"source": "gsdml_file", "filepath": filepath}
         try:
-            entry, cached = resources.gsd_parser.load_cached(filepath)
+            # In a worker thread, under a deadline, so a large file cannot stall the server (rule 12).
+            with anyio.fail_after(GSD_PARSE_DEADLINE_S):
+                entry, cached = await anyio.to_thread.run_sync(
+                    resources.gsd_parser.load_cached, filepath, abandon_on_cancel=True
+                )
+        except TimeoutError:
+            return err("load_gsd_file", f"Parsing {filepath} took longer than {GSD_PARSE_DEADLINE_S:g} s", meta)
         except FileNotFoundError as exc:
             return err("load_gsd_file", str(exc), meta)
         except GSDMLError as exc:

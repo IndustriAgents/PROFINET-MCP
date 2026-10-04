@@ -151,16 +151,22 @@ def test_non_gsdml_files_are_rejected(tmp_path, content: bytes, fragment: str) -
 
 # -- hostile XML ---------------------------------------------------------------------------
 #
-# Entities go into element text (<ProfileRevision>). An external entity inside an *attribute* value is a
-# well-formedness error for every parser, so a test built that way could never fail.
+# Layer 1: GSDParser.load refuses any DOCTYPE/ENTITY before parsing (GSDML never needs a DTD).
+# Layer 2 (defence in depth): the parser itself does not expand entities, load DTDs or fetch.
 
 SECRET = "TOP-SECRET-7f3a91"
+FIXTURE_TEXT = SAMPLE_GSDML.read_bytes().decode("latin-1")
 
 
-def with_doctype(doctype: str, revision: str) -> bytes:
-    text = SAMPLE_GSDML.read_bytes().decode("latin-1")
-    text = text.replace("<ISO15745Profile ", doctype + "\n<ISO15745Profile ", 1)
+def with_doctype(doctype: str, revision: str = "1.00", vendor: str = "IndustriAgents Test Fixtures") -> bytes:
+    """The fixture with a DOCTYPE, entity references in element text (revision) and an attribute (vendor)."""
+    text = FIXTURE_TEXT.replace("<ISO15745Profile ", doctype + "\n<ISO15745Profile ", 1)
     text = text.replace("<ProfileRevision>1.00</ProfileRevision>", f"<ProfileRevision>{revision}</ProfileRevision>", 1)
+    text = text.replace(
+        '<VendorName Value="IndustriAgents Test Fixtures"/>\n    </DeviceIdentity>',
+        f'<VendorName Value="{vendor}"/>\n    </DeviceIdentity>',
+        1,
+    )
     return text.encode("latin-1")
 
 
@@ -194,44 +200,10 @@ def loopback_http():
         server.server_close()
 
 
-def secret_file(tmp_path):
+def secret_file(tmp_path) -> str:
     secret = tmp_path / "secret.txt"
     secret.write_text(SECRET)
-    return secret
-
-
-def assert_entity_not_expanded(tmp_path, doctype: str) -> None:
-    path = tmp_path / "xxe.xml"
-    path.write_bytes(with_doctype(doctype, "&x;"))
-    entry = GSDParser().load(path)  # must parse: refusing is not what is being tested here
-    assert SECRET not in repr(entry)
-    assert entry.metadata["profile_revision"] is None
-    assert len(entry.modules) == 5  # the rest of the file is still read
-
-
-def file_entity(tmp_path) -> str:
-    """Internal subset declaring an external entity that points at a local secret."""
-    return f'<!DOCTYPE ISO15745Profile [<!ENTITY x SYSTEM "file://{secret_file(tmp_path)}">]>'
-
-
-def external_dtd(tmp_path) -> str:
-    """External DTD (a local file) whose entity carries the secret."""
-    dtd = tmp_path / "ext.dtd"
-    dtd.write_text(f'<!ENTITY x "{SECRET}">')
-    return f'<!DOCTYPE ISO15745Profile SYSTEM "file://{dtd}">'
-
-
-@pytest.mark.parametrize("make_doctype", [file_entity, external_dtd], ids=["file-entity", "external-dtd-file"])
-def test_entities_are_not_expanded(tmp_path, make_doctype) -> None:
-    assert_entity_not_expanded(tmp_path, make_doctype(tmp_path))
-
-
-@pytest.mark.parametrize("make_doctype", [file_entity, external_dtd], ids=["file-entity", "external-dtd-file"])
-def test_xxe_checks_fail_against_an_unhardened_parser(tmp_path, monkeypatch, make_doctype) -> None:
-    """Control: with a permissive parser the secret leaks, so the checks above are able to fail."""
-    monkeypatch.setattr(gsd_parser, "_xml_parser", unhardened_parser)
-    with pytest.raises(AssertionError):
-        assert_entity_not_expanded(tmp_path, make_doctype(tmp_path))
+    return str(secret)
 
 
 LAUGHS = (
@@ -239,57 +211,126 @@ LAUGHS = (
     + "".join(f'<!ENTITY {chr(98 + i)} "' + f"&{chr(97 + i)};" * 10 + '">' for i in range(9))
     + "]>"
 )
+QUADRATIC = '<!DOCTYPE ISO15745Profile [<!ENTITY x "' + "A" * 100_000 + '">]>'
 
 
-@pytest.mark.parametrize(
-    ("doctype", "revision"),
-    [
-        (LAUGHS, "&j;"),  # billion laughs: 10^10 bytes if expanded
-        ('<!DOCTYPE ISO15745Profile [<!ENTITY x "' + "A" * 100_000 + '">]>', "&x;" * 2000),  # quadratic blowup
-    ],
-    ids=["billion-laughs", "quadratic"],
-)
-def test_entity_expansion_bombs_are_harmless(tmp_path, doctype: str, revision: str) -> None:
-    path = tmp_path / "bomb.xml"
-    path.write_bytes(with_doctype(doctype, revision))
-    started = time.perf_counter()
-    try:
-        entry = GSDParser().load(path)
-    except GSDMLError as exc:
-        assert "entity" in str(exc).lower()  # refused by libxml2's amplification limit
-    else:
-        assert entry.metadata["profile_revision"] is None  # not expanded
-    assert time.perf_counter() - started < 5
-
-
-def network_cases(base: str) -> dict[str, tuple[str, str]]:
+def hostile_documents(tmp_path, base: str) -> dict[str, bytes]:
+    dtd = tmp_path / "ext.dtd"
+    dtd.write_text(f'<!ENTITY x "{SECRET}">')
+    file_entity = f'<!DOCTYPE ISO15745Profile [<!ENTITY x SYSTEM "file://{secret_file(tmp_path)}">]>'
     return {
-        "external-dtd": (f'<!DOCTYPE ISO15745Profile SYSTEM "{base}/ext.dtd">', "&x;"),
-        "parameter-entity": (f'<!DOCTYPE ISO15745Profile [<!ENTITY % p SYSTEM "{base}/p.dtd"> %p;]>', "&x;"),
-        "general-entity": (f'<!DOCTYPE ISO15745Profile [<!ENTITY x SYSTEM "{base}/e.txt">]>', "&x;"),
+        "file-entity-in-text": with_doctype(file_entity, revision="&x;"),
+        "external-dtd-file": with_doctype(f'<!DOCTYPE ISO15745Profile SYSTEM "file://{dtd}">', revision="&x;"),
+        "billion-laughs-in-text": with_doctype(LAUGHS, revision="&j;"),
+        # At the lxml 4.9.2 floor (libxml2 2.9) entities in attribute values are always expanded: this one
+        # took 85 s and 391 MB there before DOCTYPEs were refused up front.
+        "quadratic-in-attribute": with_doctype(QUADRATIC, vendor="&x;" * 2000),
+        "billion-laughs-in-attribute": with_doctype(LAUGHS, vendor="&j;"),
+        "http-external-dtd": with_doctype(f'<!DOCTYPE ISO15745Profile SYSTEM "{base}/ext.dtd">', revision="&x;"),
+        "http-parameter-entity": with_doctype(
+            f'<!DOCTYPE ISO15745Profile [<!ENTITY % p SYSTEM "{base}/p.dtd"> %p;]>', revision="&x;"
+        ),
+        "http-general-entity": with_doctype(
+            f'<!DOCTYPE ISO15745Profile [<!ENTITY x SYSTEM "{base}/e.txt">]>', revision="&x;"
+        ),
+        "utf16-doctype": with_doctype(file_entity, revision="&x;")
+        .decode("latin-1")
+        .replace('encoding="iso-8859-1"', 'encoding="UTF-16"')
+        .encode("utf-16"),
     }
 
 
-def parse_network_cases(tmp_path, base: str) -> list[str]:
-    seen = []
-    for name, (doctype, revision) in network_cases(base).items():
-        path = tmp_path / f"{name}.xml"
-        path.write_bytes(with_doctype(doctype, revision))
-        try:
-            entry = GSDParser().load(path)
-        except GSDMLError:
-            continue
-        seen.append(repr(entry))
-    return seen
-
-
-def test_no_network_access_while_parsing(tmp_path, loopback_http) -> None:
-    # The libxml2 bundled with lxml 6 has no HTTP client; no_network=True keeps a build that has one
-    # from fetching. The control below runs only where fetching is possible at all.
+def test_hostile_documents_are_refused_before_parsing(tmp_path, loopback_http) -> None:
     base, hits = loopback_http
-    parsed = parse_network_cases(tmp_path, base)
+    for name, content in hostile_documents(tmp_path, base).items():
+        path = tmp_path / f"{name}.xml"
+        path.write_bytes(content)
+        started = time.perf_counter()
+        with pytest.raises(GSDMLError, match="contains <!DOCTYPE: GSDML files never need a DTD") as raised:
+            GSDParser().load(path)
+        assert time.perf_counter() - started < 2, name
+        assert SECRET not in str(raised.value), name
     assert hits == []
-    assert not any("FETCHED-OVER-HTTP" in text for text in parsed)
+
+
+@pytest.mark.parametrize(
+    ("content", "fragment"),
+    [
+        (b'<?xml version="1.0" encoding="UTF-7"?>\n<ISO15745Profile/>', "encoding 'utf-7'"),
+        (b'<?xml version="1.0" encoding="EBCDIC-US"?>\n<ISO15745Profile/>', "encoding 'ebcdic-us'"),
+        (b'<?xml version="1.0"?>\n<!ENTITY x "y">\n<ISO15745Profile/>', "contains <!ENTITY"),
+        (b'<?xml version="1.0"?>\n<!doctype ISO15745Profile>\n<ISO15745Profile/>', "contains <!DOCTYPE"),
+    ],
+    ids=["utf-7", "ebcdic", "bare-entity", "lowercase-doctype"],
+)
+def test_encodings_that_could_hide_a_doctype_are_refused(tmp_path, content: bytes, fragment: str) -> None:
+    path = tmp_path / "odd.xml"
+    path.write_bytes(content)
+    with pytest.raises(GSDMLError, match=fragment):
+        GSDParser().load(path)
+
+
+@pytest.mark.parametrize("codec", ["utf-16", "utf-16-le", "utf-16-be", "utf-8-sig"])
+def test_unicode_encoded_gsdml_still_parses(tmp_path, codec: str) -> None:
+    label = "UTF-8" if codec == "utf-8-sig" else "UTF-16"
+    text = FIXTURE_TEXT.replace('encoding="iso-8859-1"', f'encoding="{label}"')
+    path = tmp_path / f"GSDML-V2.35-{codec}.xml"
+    path.write_bytes(text.encode(codec))
+    entry = GSDParser().load(path)
+    assert entry.metadata["vendor_id"] == "0x0F00" and len(entry.modules) == 5
+
+
+def test_files_over_the_size_cap_are_refused(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(gsd_parser, "MAX_FILE_BYTES", 1024)
+    path = tmp_path / "big.xml"
+    path.write_bytes(SAMPLE_GSDML.read_bytes())
+    with pytest.raises(GSDMLError, match="larger than"):
+        GSDParser().load(path)
+
+
+# Layer 2: the parser alone, with the pre-check bypassed.
+
+
+def parse_directly(content: bytes) -> str:
+    """Parse with gsd_parser's parser (no DOCTYPE pre-check) and return everything it produced."""
+    try:
+        root = etree.fromstring(content, gsd_parser._xml_parser())
+    except etree.XMLSyntaxError as exc:
+        return f"refused: {exc}"
+    return etree.tostring(root, encoding="unicode") + "".join(
+        f"{element.tag}={value}" for element in root.iter() for value in element.attrib.values()
+    )
+
+
+def text_entity_documents(tmp_path) -> dict[str, bytes]:
+    docs = hostile_documents(tmp_path, "http://127.0.0.1:9")
+    return {name: docs[name] for name in ("file-entity-in-text", "external-dtd-file", "billion-laughs-in-text")}
+
+
+@pytest.mark.parametrize("name", ["file-entity-in-text", "external-dtd-file", "billion-laughs-in-text"])
+def test_parser_does_not_expand_entities(tmp_path, name: str) -> None:
+    output = parse_directly(text_entity_documents(tmp_path)[name])
+    assert SECRET not in output
+    assert "a" * 10_000 not in output
+
+
+@pytest.mark.parametrize("name", ["file-entity-in-text", "external-dtd-file"])
+def test_parser_checks_fail_against_an_unhardened_parser(tmp_path, monkeypatch, name: str) -> None:
+    """Control: with a permissive parser the secret leaks, so the checks above are able to fail."""
+    monkeypatch.setattr(gsd_parser, "_xml_parser", unhardened_parser)
+    assert SECRET in parse_directly(text_entity_documents(tmp_path)[name])
+
+
+def parse_network_cases(tmp_path, base: str) -> None:
+    docs = hostile_documents(tmp_path, base)
+    for name in ("http-external-dtd", "http-parameter-entity", "http-general-entity"):
+        parse_directly(docs[name])
+
+
+def test_parser_does_not_fetch(tmp_path, loopback_http) -> None:
+    base, hits = loopback_http
+    parse_network_cases(tmp_path, base)
+    assert hits == []
 
 
 def test_network_check_fails_against_an_unhardened_parser(tmp_path, loopback_http, monkeypatch) -> None:

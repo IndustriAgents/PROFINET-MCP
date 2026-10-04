@@ -22,7 +22,7 @@ from lxml import etree
 
 GSDML_NAMESPACE = "http://www.profibus.com/GSDML/2003/11/DeviceProfile"
 XSI_NAMESPACE = "http://www.w3.org/2001/XMLSchema-instance"
-MAX_FILE_BYTES = 64 * 1024 * 1024
+MAX_FILE_BYTES = 32 * 1024 * 1024  # the largest real GSDML files are a few MiB
 CACHE_SIZE = 64
 
 #: Byte sizes of GSDML ``DataItem`` data types. Types not listed here (or
@@ -66,6 +66,53 @@ LENGTH_TYPES = frozenset({"OctetString", "VisibleString", "OctetString_S", "Unic
 
 _SCHEMA_VERSION_RE = re.compile(r"GSDML-DeviceProfile-(V\d+\.\d+)\.xsd", re.IGNORECASE)
 _FILENAME_VERSION_RE = re.compile(r"^GSDML-(V\d+\.\d+)-", re.IGNORECASE)
+
+
+#: Encodings a GSDML file may declare. All are ASCII-compatible, so the markers below are visible as
+#: plain bytes; UTF-16/32 files are decoded before the check. Anything else (UTF-7, EBCDIC, ...) could
+#: hide a DOCTYPE from a byte search, so it is refused.
+ASCII_COMPATIBLE_ENCODINGS = frozenset(
+    {"utf-8", "utf8", "us-ascii", "ascii"}
+    | {f"iso-8859-{n}" for n in range(1, 17)}
+    | {f"iso8859-{n}" for n in range(1, 17)}
+    | {"latin1", "latin-1"}
+    | {f"windows-{n}" for n in range(1250, 1259)}
+    | {f"cp{n}" for n in range(1250, 1259)}
+)
+_DECLARED_ENCODING = re.compile(rb"""^\s*<\?xml[^>]*?encoding\s*=\s*["']([A-Za-z0-9._-]+)["']""")
+_FORBIDDEN_MARKERS = ("<!doctype", "<!entity")
+
+
+def check_no_dtd(data: bytes, name: str) -> None:
+    """Refuse any document type declaration or entity declaration before parsing.
+
+    GSDML never needs a DTD. Refusing it up front blocks XXE and entity-expansion bombs on every
+    libxml2 version, including old ones that always expand internal entities in attribute values.
+    """
+    head = data[:4]
+    if head[:3] == b"\xef\xbb\xbf":
+        data, head = data[3:], data[3:7]
+    utf32 = head in (b"\x00\x00\x00<", b"<\x00\x00\x00", b"\x00\x00\xfe\xff", b"\xff\xfe\x00\x00")
+    utf16 = not utf32 and (head[:2] in (b"\xfe\xff", b"\xff\xfe") or head in (b"\x00<\x00?", b"<\x00?\x00"))
+    if utf32 or utf16:
+        codec = ("utf-32" if utf32 else "utf-16") + ("-be" if head[:1] == b"\x00" or head[:2] == b"\xfe\xff" else "-le")
+        try:
+            text = data.decode(codec).lstrip("\ufeff").lower()
+        except UnicodeDecodeError:
+            raise GSDMLError(f"{name} is not valid {codec.upper()}") from None
+        found = [marker for marker in _FORBIDDEN_MARKERS if marker in text]
+    else:
+        declared = _DECLARED_ENCODING.match(data[:1024])
+        encoding = declared.group(1).decode("ascii").lower() if declared else "utf-8"
+        if encoding not in ASCII_COMPATIBLE_ENCODINGS:
+            raise GSDMLError(f"{name} declares encoding {encoding!r}, which is not supported for GSDML files")
+        lowered = data.lower()
+        found = [marker for marker in _FORBIDDEN_MARKERS if marker.encode("ascii") in lowered]
+    if found:
+        raise GSDMLError(
+            f"{name} contains {found[0].upper()}: GSDML files never need a DTD or entity declarations, and they "
+            "are refused because they can read local files or expand into gigabytes"
+        )
 
 
 def _xml_parser() -> etree.XMLParser:
@@ -166,8 +213,12 @@ class GSDParser:
         path = self.resolve(filepath)
         if path.stat().st_size > MAX_FILE_BYTES:
             raise GSDMLError(f"{path} is larger than {MAX_FILE_BYTES // (1024 * 1024)} MiB")
+        data = path.read_bytes()
+        if len(data) > MAX_FILE_BYTES:  # it grew between stat() and read
+            raise GSDMLError(f"{path} is larger than {MAX_FILE_BYTES // (1024 * 1024)} MiB")
+        check_no_dtd(data, path.name)
         try:
-            root = etree.parse(str(path), _xml_parser()).getroot()
+            root = etree.fromstring(data, _xml_parser(), base_url=str(path))
         except etree.XMLSyntaxError as exc:
             raise GSDMLError(f"{path.name} is not well-formed XML: {exc}") from exc
         namespace = etree.QName(root).namespace
