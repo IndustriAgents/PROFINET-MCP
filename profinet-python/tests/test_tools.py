@@ -83,6 +83,9 @@ class RecordingBackend:
     def describe(self):
         return {"backend": self.name}
 
+    def shutdown(self) -> None:
+        self.calls.append(("shutdown", ()))
+
     async def probe(self):
         return {"reachable": True, "detail": "fake"}
 
@@ -584,8 +587,10 @@ async def test_outcome_is_not_sent_when_nothing_went_out() -> None:
         (b'{"data": 1}\n', "unknown"),
         (b'{"success": false, "error": "Internal mock error: boom"}\n', "unknown"),
         (b'{"success": false, "error": "Slot 1/subslot 2 not found", "rejected": true}\n', "rejected"),
+        (b'{"success": false, "error": "odd", "rejected": "true"}\n', "unknown"),
+        (b'{"success": false, "error": "odd", "rejected": 1}\n', "unknown"),
     ],
-    ids=["garbage", "no-success-flag", "internal-error", "explicit-refusal"],
+    ids=["garbage", "no-success-flag", "internal-error", "explicit-refusal", "string-true", "integer-1"],
 )
 @pytest.mark.parametrize(
     ("tool", "arguments"),

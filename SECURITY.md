@@ -50,6 +50,9 @@ application on the office network.
   is lost or garbled, or the overall deadline expires, the tool returns
   `success: false` with `meta.outcome: "unknown"`: the change may have been
   applied, so read the device back before trying again.
+- **A disconnected client sends nothing more.** When the MCP client goes away
+  (stdin closes), changes that are still connecting or waiting to retry are
+  cancelled before they are sent, and no new request starts.
 - **GSDML files are untrusted input.** `load_gsd_file` refuses any `DOCTYPE`
   or `ENTITY` declaration before parsing (blocking XXE and entity-expansion
   bombs on every libxml2 version), unusual encodings and files over 32 MiB,

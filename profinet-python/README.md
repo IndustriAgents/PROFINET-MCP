@@ -54,7 +54,13 @@ is lost is sent again, but a write or DCP command never is. "rejected" is used
 only when the mock marks a refusal `"rejected": true` (refused before anything
 changed); any other failure after a send is "unknown". Every request also has
 an overall deadline (all connect and reply timeouts, retries and backoff, plus
-slack), so no call can hang.
+slack: 45.5 s with the defaults), so no call can hang; when it expires, a
+request that never left is `not_sent` and a change that did is `unknown`.
+
+When the MCP client disconnects (stdin closes), pending requests are stopped:
+one still connecting or waiting to retry is never sent (`not_sent`), one
+already sent is not repeated, no new request starts, and the server exits with
+status 0.
 
 ## Configuration
 
@@ -89,7 +95,7 @@ defensively:
 | `PROFINET_MOCK_PORT` | `5600` | Port of the mock IO device |
 | `PROFINET_INTERFACE` | `eth0` | Ethernet interface for DCP discovery (`network` backend) |
 | `PROFINET_DCP_TIMEOUT` | `5` | Default discovery time, in seconds (0.5-60) |
-| `PROFINET_TIMEOUT` | `10` | Timeout for each request to the mock, in seconds |
+| `PROFINET_TIMEOUT` | `5` | Timeout for each connect and each reply from the mock, in seconds |
 | `PROFINET_MAX_RETRIES` | `3` | Extra connection attempts to the mock, and re-sends of a read whose reply was lost (0-10); changes are never re-sent |
 | `PROFINET_RETRY_BACKOFF_BASE` | `0.5` | First retry delay in seconds; doubles each attempt |
 | `PROFINET_CONTROLLER_IP` | `192.168.1.1` | Reported by `ping` only |

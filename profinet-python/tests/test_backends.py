@@ -13,6 +13,7 @@ from test_dcp import XID, FakeTransport, identify_response
 
 from profinet_mcp import dcp
 from profinet_mcp.backends import (
+    ClientDisconnected,
     DeviceRejected,
     MockBackend,
     NetworkBackend,
@@ -219,6 +220,30 @@ async def test_bad_replies_to_changes_are_unknown_not_rejected(mode: str, op: st
     assert [r["op"] for r in fake.received] == [op]
 
 
+@pytest.mark.parametrize("flag", ['"true"', "1", '"yes"', "null", "false"])
+@pytest.mark.parametrize(("op", "operation"), CHANGES, ids=[op for op, _ in CHANGES])
+async def test_only_a_literal_true_rejected_flag_counts(op: str, operation, flag: str) -> None:
+    """ "rejected": "true" / 1 is not the mock's contract; a change answered with it may have happened."""
+    fake = DroppingMock("silent")
+    reply = b'{"success": false, "error": "odd", "rejected": ' + flag.encode() + b"}\n"
+
+    async def answer(stream) -> None:
+        async with stream:
+            fake.received.append(json.loads(await stream.receive()))
+            await stream.send(reply)
+
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    port = listener.extra(SocketAttribute.local_port)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(listener.serve, answer)
+        try:
+            with pytest.raises(OutcomeUnknown, match="may have been applied"):
+                await operation(MockBackend("127.0.0.1", port, timeout=1, max_retries=3))
+        finally:
+            tg.cancel_scope.cancel()
+    assert len(fake.received) == 1
+
+
 @pytest.mark.parametrize(("op", "operation"), CHANGES, ids=[op for op, _ in CHANGES])
 async def test_explicit_refusal_is_rejected(op: str, operation) -> None:
     async def refuse(stream) -> None:
@@ -373,3 +398,189 @@ async def test_device_lookups_reuse_a_fresh_discovery(monkeypatch) -> None:
     now[0] += 1.5
     _, meta = await backend.discover(0.5, allow_cached=True)  # older than the interval: fresh request
     assert meta["cached"] is False and len(transport.sent) == 2
+
+
+# -- the MCP client disconnects while a request is pending (rules 1 and 12) -------------------
+
+
+async def closed_port() -> int:
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    port = listener.extra(SocketAttribute.local_port)
+    await listener.aclose()
+    return port
+
+
+async def count_arrivals(port: int, seconds: float) -> list[bytes]:
+    """Listen on ``port`` for a while and return whatever arrives."""
+    arrivals: list[bytes] = []
+
+    async def record(stream) -> None:
+        async with stream:
+            try:
+                with anyio.fail_after(1):
+                    arrivals.append(await stream.receive())
+            except (TimeoutError, anyio.EndOfStream):
+                arrivals.append(b"<connected>")
+
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=port)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(listener.serve, record)
+        await anyio.sleep(seconds)
+        tg.cancel_scope.cancel()
+    return arrivals
+
+
+@pytest.mark.parametrize(("op", "operation"), CHANGES, ids=[op for op, _ in CHANGES])
+async def test_disconnect_during_retry_backoff_sends_nothing(op: str, operation) -> None:
+    port = await closed_port()
+    backend = MockBackend("127.0.0.1", port, timeout=5, max_retries=5, backoff_base=1.0)
+    outcome: dict = {}
+
+    async def run() -> None:
+        try:
+            await operation(backend)
+        except Exception as exc:  # noqa: BLE001 - recorded for the assertions
+            outcome["error"] = exc
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(run)
+        await anyio.sleep(0.3)  # first connect refused; now waiting 1 s to retry
+        backend.shutdown()
+    assert isinstance(outcome["error"], ClientDisconnected), outcome
+    assert await count_arrivals(port, 2.5) == []  # the retry never happens
+
+
+async def test_disconnect_during_a_hanging_connect_sends_nothing(monkeypatch) -> None:
+    attempts = []
+
+    async def hanging_connect(host, port, **kwargs):
+        attempts.append(port)
+        await anyio.sleep(60)
+
+    monkeypatch.setattr(anyio, "connect_tcp", hanging_connect)
+    backend = MockBackend("127.0.0.1", 9, timeout=30, max_retries=0)
+    outcome: dict = {}
+
+    async def run() -> None:
+        try:
+            await backend.write_io("x", 1, 2, b"\x01")
+        except Exception as exc:  # noqa: BLE001
+            outcome["error"] = exc
+
+    with anyio.fail_after(5):
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(run)
+            await anyio.sleep(0.2)
+            backend.shutdown()
+    assert attempts and isinstance(outcome["error"], ClientDisconnected)
+
+
+async def test_disconnect_between_connect_and_send_sends_nothing(monkeypatch) -> None:
+    received: list[bytes] = []
+
+    async def record(stream) -> None:
+        async with stream:
+            try:
+                received.append(await stream.receive())
+            except anyio.EndOfStream:
+                pass
+
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    port = listener.extra(SocketAttribute.local_port)
+    backend = MockBackend("127.0.0.1", port, timeout=5, max_retries=0)
+    real_connect = anyio.connect_tcp
+
+    async def connect_then_disconnect(*args, **kwargs):
+        stream = await real_connect(*args, **kwargs)
+        backend.shutdown()  # the client leaves right after the connection is up
+        return stream
+
+    monkeypatch.setattr(anyio, "connect_tcp", connect_then_disconnect)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(listener.serve, record)
+        try:
+            with pytest.raises(ClientDisconnected):
+                await backend.set_name(MAC, "late-name")
+            await anyio.sleep(0.3)
+        finally:
+            tg.cancel_scope.cancel()
+    assert received == []
+
+
+async def test_disconnect_while_waiting_for_the_reply_is_unknown_for_changes() -> None:
+    fake = DroppingMock("silent")
+    async with anyio.create_task_group() as tg:
+        port = await serve(fake, tg)
+        backend = MockBackend("127.0.0.1", port, timeout=10, max_retries=3)
+        outcomes: dict = {}
+
+        async def run(name, operation) -> None:
+            try:
+                await operation()
+            except Exception as exc:  # noqa: BLE001
+                outcomes[name] = exc
+
+        async with anyio.create_task_group() as calls:
+            calls.start_soon(run, "write", lambda: backend.write_io("x", 1, 2, b"\x01"))
+            calls.start_soon(run, "read", lambda: backend.read_io("x", 1, 1, 2))
+            await anyio.sleep(0.5)
+            backend.shutdown()
+        tg.cancel_scope.cancel()
+    assert isinstance(outcomes["write"], OutcomeUnknown) and "may have been applied" in str(outcomes["write"])
+    assert type(outcomes["read"]) is ProfinetClientError and "disconnected" in str(outcomes["read"])
+    assert sorted(r["op"] for r in fake.received) == ["read", "write"]  # each sent once, never again
+
+
+async def test_no_request_starts_after_shutdown() -> None:
+    port = await closed_port()
+    backend = MockBackend("127.0.0.1", port, timeout=5, max_retries=3)
+    backend.shutdown()
+    with pytest.raises(ClientDisconnected):
+        await backend.write_io("x", 1, 2, b"\x01")
+    with pytest.raises(ClientDisconnected):
+        await backend.discover(1.0)
+    network = NetworkBackend("fake0", transport=FakeTransport([]))
+    network.shutdown()
+    with pytest.raises(ClientDisconnected):
+        await network.discover(0.5)
+    assert network.transport.sent == []
+
+
+def test_default_deadlines_stay_under_fifty_seconds() -> None:
+    """Review minor: with default settings no call can take longer than ~50 s, client backstop included."""
+    config = ProfinetConfig(backend="mock")
+    mock = create_backend(config)
+    network = create_backend(ProfinetConfig(backend="network"))
+    worst = [
+        mock.deadline(None),  # read, write, identify, set_name, set_ip
+        mock.deadline(config.dcp_timeout),  # discover via the mock
+        network.deadline(config.dcp_timeout),  # DCP discovery
+    ]
+    assert all(deadline + 2.0 < 50 for deadline in worst), worst
+
+
+async def test_deadline_expiring_before_the_send_is_not_sent(monkeypatch) -> None:
+    async def hanging_connect(host, port, **kwargs):
+        await anyio.sleep(60)
+
+    monkeypatch.setattr(anyio, "connect_tcp", hanging_connect)
+    backend = MockBackend("127.0.0.1", 9, timeout=30, max_retries=0)
+    monkeypatch.setattr(backend, "deadline", lambda timeout=None: 0.3)
+    with anyio.fail_after(5):
+        with pytest.raises(RequestNotSent, match="was not sent within its 0.3 s deadline"):
+            await backend.write_io("x", 1, 2, b"\x01")
+
+
+async def test_deadline_expiring_after_the_send_is_unknown(monkeypatch) -> None:
+    fake = DroppingMock("silent")
+    async with anyio.create_task_group() as tg:
+        port = await serve(fake, tg)
+        backend = MockBackend("127.0.0.1", port, timeout=30, max_retries=0)
+        monkeypatch.setattr(backend, "deadline", lambda timeout=None: 0.5)
+        try:
+            with anyio.fail_after(5):
+                with pytest.raises(OutcomeUnknown, match="deadline expired"):
+                    await backend.set_ip(MAC, "10.0.0.2", "255.0.0.0", "0.0.0.0")
+        finally:
+            tg.cancel_scope.cancel()
+    assert [r["op"] for r in fake.received] == ["set_ip"]

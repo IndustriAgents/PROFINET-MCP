@@ -75,7 +75,7 @@ class ProfinetConfig:
     network_cidr: str = "192.168.1.0/24"
     dcp_port: int = 34964
     dcp_timeout: float = 5.0
-    timeout: float = 10.0
+    timeout: float = 5.0
     max_retries: int = 3
     retry_backoff_base: float = 0.5
     mock_host: str = "127.0.0.1"
@@ -112,7 +112,7 @@ class ProfinetConfig:
             network_cidr=network,
             dcp_port=int(_env_number(env, "PROFINET_DCP_PORT", 34964, int, 1, 65535)),
             dcp_timeout=float(_env_number(env, "PROFINET_DCP_TIMEOUT", 5.0, float, 0.5, 60)),
-            timeout=float(_env_number(env, "PROFINET_TIMEOUT", 10.0, float, 0.1, 600)),
+            timeout=float(_env_number(env, "PROFINET_TIMEOUT", 5.0, float, 0.1, 600)),
             max_retries=int(_env_number(env, "PROFINET_MAX_RETRIES", 3, int, 0, 10)),
             retry_backoff_base=float(_env_number(env, "PROFINET_RETRY_BACKOFF_BASE", 0.5, float, 0, 30)),
             mock_host=_env_str(env, "PROFINET_MOCK_HOST", "127.0.0.1"),

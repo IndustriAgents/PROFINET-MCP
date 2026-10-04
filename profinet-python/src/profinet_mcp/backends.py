@@ -72,6 +72,14 @@ class BackendUnavailable(RequestNotSent):
     """The backend could not be reached, so the request was never sent."""
 
 
+class ClientDisconnected(RequestNotSent):
+    """The MCP client went away before the request was sent; nothing was sent."""
+
+
+class _ClientGone(Exception):
+    """Raised instead of sending once the MCP client has disconnected."""
+
+
 class DeviceRejected(ProfinetClientError):
     """The device refused the request in a way that guarantees nothing was changed."""
 
@@ -91,6 +99,9 @@ class Backend(Protocol):
 
     def deadline(self, timeout: float | None = None) -> float:
         """Overall seconds one request may take, retries included (suite rule 12)."""
+
+    def shutdown(self) -> None:
+        """The MCP client disconnected: stop every pending request and send nothing new."""
 
     async def discover(self, timeout: float, *, allow_cached: bool = False) -> tuple[list[dict[str, Any]], Meta]: ...
 
@@ -143,6 +154,9 @@ class UnconfiguredBackend:
     def deadline(self, timeout: float | None = None) -> float:
         return 5.0
 
+    def shutdown(self) -> None:
+        """Nothing is ever pending: this backend contacts nothing."""
+
     async def discover(self, timeout: float, *, allow_cached: bool = False) -> tuple[list[dict[str, Any]], Meta]:
         return self._refuse()
 
@@ -186,6 +200,19 @@ class MockBackend:
         self.timeout = timeout
         self.max_retries = max_retries
         self.backoff_base = backoff_base
+        #: Set when the MCP client disconnects; checked right before every send.
+        self.closing = False
+        self._scopes: set[anyio.CancelScope] = set()
+
+    def shutdown(self) -> None:
+        """The MCP client disconnected: cancel every pending request.
+
+        A request still connecting or waiting to retry ends without being sent (``not_sent``); one
+        already sent ends ``unknown`` for a change. No new request is sent after this.
+        """
+        self.closing = True
+        for scope in list(self._scopes):
+            scope.cancel()
 
     @property
     def endpoint(self) -> str:
@@ -201,7 +228,7 @@ class MockBackend:
         """Worst case of :meth:`call`: every attempt connects and waits for a reply, plus backoff."""
         attempts = self.max_retries + 1
         backoff = sum(self.backoff_base * (2**attempt) for attempt in range(self.max_retries))
-        return attempts * (self.timeout + (timeout or self.timeout)) + backoff + 2.0
+        return attempts * (self.timeout + (timeout or self.timeout)) + backoff + 1.0
 
     async def _connect(self) -> Any:
         last: BaseException | None = None
@@ -226,33 +253,44 @@ class MockBackend:
         Connecting is retried (``max_retries``). After the request has been sent, a read that gets no
         reply is sent again, but a request that ``changes_device`` (write, identify, set_name, set_ip)
         never is: the device may already have applied it, so the caller gets :class:`OutcomeUnknown`.
+        The whole call is bounded by :meth:`deadline`, and :meth:`shutdown` stops it; either way a
+        request that was never sent is reported as not sent.
         """
         op = request["op"]
         try:
             payload = json.dumps(request, allow_nan=False).encode("utf-8") + b"\n"
         except (TypeError, ValueError) as exc:  # built locally; nothing has been sent
             raise RequestNotSent(f"Could not encode the {op!r} request: {exc}") from exc
-        attempts = 1 if changes_device else self.max_retries + 1
-        for attempt in range(attempts):
-            stream = await self._connect()  # nothing has been sent yet, so this may retry
-            try:
-                async with stream:
-                    with anyio.fail_after(timeout or self.timeout):
-                        await stream.send(payload)
-                        line = await BufferedByteReceiveStream(stream).receive_until(b"\n", MAX_RESPONSE_BYTES)
-                break
-            except anyio.DelimiterNotFound:
-                problem = f"its answer was larger than {MAX_RESPONSE_BYTES} bytes"
-            except TimeoutError:
-                problem = f"no reply within {timeout or self.timeout:g} s"
-            except (OSError, anyio.EndOfStream, anyio.BrokenResourceError, anyio.IncompleteRead) as exc:
-                problem = f"no reply; the connection was lost ({type(exc).__name__})"
+        if self.closing:
+            raise ClientDisconnected(f"The MCP client has disconnected; the {op!r} request was not sent.")
+        state = {"sent": False}
+        line: bytes | None = None
+        scope = anyio.CancelScope()
+        self._scopes.add(scope)
+        try:
+            with scope, anyio.fail_after(self.deadline(timeout)):
+                line = await self._exchange(op, payload, timeout, state, changes_device)
+        except _ClientGone:
+            pass
+        except TimeoutError:
+            if changes_device and state["sent"]:
+                raise self._unknown(op, f"the {self.deadline(timeout):g} s deadline expired") from None
+            if not state["sent"]:
+                raise RequestNotSent(
+                    f"The {op!r} request to the mock at {self.endpoint} was not sent within its "
+                    f"{self.deadline(timeout):g} s deadline"
+                ) from None
+            raise ProfinetClientError(f"The mock at {self.endpoint} did not answer {op!r} in time") from None
+        finally:
+            self._scopes.discard(scope)
+        if line is None:  # stopped by shutdown(): the MCP client disconnected
+            if not state["sent"]:
+                raise ClientDisconnected(
+                    f"The MCP client disconnected before the {op!r} request was sent; nothing was sent."
+                )
             if changes_device:
-                raise self._unknown(op, problem)
-            if attempt + 1 < attempts and not problem.startswith("its answer"):
-                await anyio.sleep(self.backoff_base * (2**attempt))
-                continue
-            raise ProfinetClientError(f"The mock at {self.endpoint} did not answer {op!r}: {problem}")
+                raise self._unknown(op, "the MCP client disconnected while the request was waiting for its reply")
+            raise ProfinetClientError(f"The MCP client disconnected while {op!r} was waiting for its reply")
 
         try:
             response = json.loads(line)
@@ -271,6 +309,34 @@ class MockBackend:
                 raise self._unknown(op, f"it reported a failure without confirming that nothing changed: {error}")
             raise ProfinetClientError(f"Mock IO device: {error}")
         return response.get("data")
+
+    async def _exchange(
+        self, op: str, payload: bytes, timeout: float | None, state: dict[str, bool], changes_device: bool
+    ) -> bytes:
+        attempts = 1 if changes_device else self.max_retries + 1
+        for attempt in range(attempts):
+            stream = await self._connect()  # nothing has been sent yet, so this may retry
+            try:
+                async with stream:
+                    if self.closing:  # no await between this check and the send
+                        raise _ClientGone
+                    state["sent"] = True  # from here on the request may have left
+                    with anyio.fail_after(timeout or self.timeout):
+                        await stream.send(payload)
+                        return await BufferedByteReceiveStream(stream).receive_until(b"\n", MAX_RESPONSE_BYTES)
+            except anyio.DelimiterNotFound:
+                problem = f"its answer was larger than {MAX_RESPONSE_BYTES} bytes"
+            except TimeoutError:
+                problem = f"no reply within {timeout or self.timeout:g} s"
+            except (OSError, anyio.EndOfStream, anyio.BrokenResourceError, anyio.IncompleteRead) as exc:
+                problem = f"no reply; the connection was lost ({type(exc).__name__})"
+            if changes_device:
+                raise self._unknown(op, problem)
+            if attempt + 1 < attempts and not problem.startswith("its answer"):
+                await anyio.sleep(self.backoff_base * (2**attempt))
+                continue
+            raise ProfinetClientError(f"The mock at {self.endpoint} did not answer {op!r}: {problem}")
+        raise AssertionError("unreachable")
 
     def _unknown(self, op: str, problem: str) -> OutcomeUnknown:
         return OutcomeUnknown(
@@ -398,6 +464,11 @@ class NetworkBackend:
         self._last_identify: float | None = None
         # (send time, completion time, devices, info) of the last finished Identify All
         self._last_result: tuple[float, float, list[dict[str, Any]], dict[str, Any]] | None = None
+        self.closing = False
+
+    def shutdown(self) -> None:
+        """The MCP client disconnected: start no new DCP exchange (discovery is read-only anyway)."""
+        self.closing = True
 
     def deadline(self, timeout: float | None = None) -> float:
         return (timeout or 0.0) + dcp.SNIFFER_START_TIMEOUT + self.slack
@@ -410,6 +481,8 @@ class NetworkBackend:
 
     async def discover(self, timeout: float, *, allow_cached: bool = False) -> tuple[list[dict[str, Any]], Meta]:
         """DCP Identify All. ``allow_cached`` (device lookups) may reuse the last answer within the interval."""
+        if self.closing:
+            raise ClientDisconnected("The MCP client has disconnected; no DCP request was sent.")
         now = self._clock()
         previous = self._last_identify
         if previous is not None and now - previous < self.min_interval:

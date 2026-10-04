@@ -370,3 +370,86 @@ def test_mock_process_helper_dies_with_its_stdin(tmp_path: Path) -> None:
         assert process.proc.wait(timeout=float(os.environ.get("ORPHAN_TIMEOUT_S", "15"))) == 0
     finally:
         process.stop()
+
+
+CHANGE_CALLS = {
+    "write_io_data": {"device_name": "pn-device-01", "slot": 1, "subslot": 2, "data": [9, 9, 9, 9]},
+    "write_device_by_alias": {"alias": "outputs", "data": [9]},
+    "set_device_name": {"device_mac": MAC, "name": "cancelled-name"},
+    "set_device_ip": {"device_mac": MAC, "ip_address": "192.168.1.77", "subnet_mask": "255.255.255.0"},
+    "identify_device": {"device_mac": MAC, "duration_s": 600},
+}
+
+
+@pytest.mark.parametrize("tool", list(CHANGE_CALLS))
+def test_client_disconnect_stops_a_pending_change(tmp_path: Path, tool: str) -> None:
+    """A change still waiting to retry must not be sent after the client disconnects (rules 1 and 12)."""
+    import socket
+    import time
+
+    probe = socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()  # nothing listens: the change fails to connect and waits in backoff
+    device_map = tmp_path / "devices.json"
+    device_map.write_text(json.dumps({"outputs": {"device_name": "pn-device-01", "slot": 1, "subslot": 2}}))
+    server = RawServer(
+        tmp_path,
+        PROFINET_BACKEND="mock",
+        PROFINET_MOCK_PORT=str(port),
+        PROFINET_WRITES_ENABLED="true",
+        PROFINET_CONFIG_CMDS_ENABLED="true",
+        PROFINET_TIMEOUT="20",
+        PROFINET_MAX_RETRIES="5",
+        PROFINET_RETRY_BACKOFF_BASE="2",
+        DEVICE_MAP_FILE=str(device_map),
+        PYTHONUNBUFFERED="1",
+    )
+    listener = None
+    try:
+        server.request(
+            1,
+            "initialize",
+            {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "pytest", "version": "0"}},
+        )
+        server.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        server.send(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": tool, "arguments": CHANGE_CALLS[tool]},
+            }
+        )
+        time.sleep(0.8)  # the first connect has failed; the change now waits 2 s to retry
+        server.proc.stdin.close()  # the client disconnects
+
+        listener = socket.socket()
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", port))
+        listener.listen(16)
+        listener.settimeout(0.1)
+        arrivals = []
+        deadline = time.monotonic() + 4  # well past the retry that would have sent it
+        while time.monotonic() < deadline:
+            try:
+                connection, _ = listener.accept()
+            except TimeoutError:
+                continue
+            connection.settimeout(1)
+            try:
+                arrivals.append(connection.recv(65536))
+            except OSError:
+                arrivals.append(b"<connected>")
+            connection.close()
+        assert arrivals == [], f"the device received {tool} after the client disconnected: {arrivals}"
+        assert server.proc.wait(timeout=10) == 0
+        time.sleep(0.2)  # let the stderr reader finish
+        stderr = "".join(server.stderr)
+        assert "MCP client disconnected" in stderr and "Traceback" not in stderr
+    finally:
+        if listener is not None:
+            listener.close()
+        if server.proc.poll() is None:
+            server.proc.kill()
+            server.proc.wait(timeout=10)

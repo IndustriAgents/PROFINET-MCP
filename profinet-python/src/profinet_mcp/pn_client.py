@@ -12,6 +12,7 @@ from .backends import (
     Backend,
     BackendNotConfigured,
     BackendUnavailable,
+    ClientDisconnected,
     DeviceRejected,
     OperationNotImplemented,
     OperationRefused,
@@ -25,6 +26,7 @@ from .config import ProfinetConfig
 __all__ = [
     "BackendNotConfigured",
     "BackendUnavailable",
+    "ClientDisconnected",
     "config_cmds_refusal",
     "DeviceRejected",
     "OperationNotImplemented",
@@ -105,7 +107,7 @@ class ProfinetClient:
         The backend's own timeouts normally end a request first; this is the backstop so that no
         call can hang. On expiry a change is reported as possibly applied, a read as a clean error.
         """
-        deadline = self.backend.deadline(timeout)
+        deadline = self.backend.deadline(timeout) + 2.0  # behind the backend's own, more precise deadline
         start = time.perf_counter()
         try:
             with anyio.fail_after(deadline):
@@ -188,6 +190,10 @@ class ProfinetClient:
         }
         status.update(self.backend.describe())
         return status
+
+    def shutdown(self) -> None:
+        """The MCP client disconnected: stop pending device requests (see the backends)."""
+        self.backend.shutdown()
 
     async def probe(self) -> dict[str, Any]:
         deadline = self.backend.deadline()
