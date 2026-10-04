@@ -193,11 +193,15 @@ def test_project_dotenv_is_found_from_the_package_source(isolated_env) -> None:
     assert cli.project_dotenv() == isolated_env.dotenv.resolve()
 
 
-def test_installed_package_has_no_implicit_dotenv(tmp_path) -> None:
-    package = tmp_path / "venv" / "lib" / "python3.11" / "site-packages" / "profinet_mcp"
+@pytest.mark.parametrize("layout", ["flat", "src-like"])
+def test_installed_package_has_no_implicit_dotenv(tmp_path, layout: str) -> None:
+    """Under site-packages there is never an implicit .env, even if the files around it look like a checkout."""
+    site = tmp_path / "venv" / "lib" / "python3.11" / "site-packages"
+    package = site / "profinet_mcp" if layout == "flat" else site / "checkout" / "src" / "profinet_mcp"
     package.mkdir(parents=True)
-    (package.parent / ".env").write_text("PROFINET_BACKEND=mock\n")
-    (package.parent / "pyproject.toml").write_text('[project]\nname = "profinet-mcp"\n')
+    project = package.parent if layout == "flat" else package.parent.parent
+    (project / ".env").write_text("PROFINET_BACKEND=mock\n")
+    (project / "pyproject.toml").write_text('[project]\nname = "profinet-mcp"\n')
     assert cli.project_dir(package) is None and cli.project_dotenv(package) is None
 
 
