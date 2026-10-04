@@ -850,3 +850,46 @@ async def test_a_send_after_the_call_deadline_is_refused_as_not_sent(monkeypatch
         await anyio.sleep(0.3)
         tg.cancel_scope.cancel()
     assert received == []
+
+
+@pytest.mark.parametrize("trigger", ["disconnect", "deadline"])
+async def test_change_interrupted_mid_send_is_unknown(mock_server, monkeypatch, trigger: str) -> None:
+    """Rule 1a: once part of a change has left, it may have been applied. A disconnect or the call's deadline
+    hitting while send() is still writing must report "unknown" with request_sent true - never "not_sent"."""
+    config = ProfinetConfig(backend="mock", mock_port=mock_server.port, max_retries=0, timeout=30, writes_enabled=True)
+    server = ProfinetMCPServer(config)
+    backend = server.client.backend
+    real_connect = backend._connect
+    partial = anyio.Event()
+
+    async def connect_with_slow_send():
+        stream = await real_connect()
+        real_send = stream.send
+
+        async def send(data: bytes) -> None:
+            await real_send(data[:5])  # part of the request has left ...
+            partial.set()
+            await anyio.sleep(30)  # ... and the rest is stuck
+            await real_send(data[5:])
+
+        stream.send = send
+        return stream
+
+    monkeypatch.setattr(backend, "_connect", connect_with_slow_send)
+    if trigger == "deadline":
+        monkeypatch.setattr(backend, "deadline", lambda timeout=None: 0.6)
+    results: dict = {}
+
+    async def write() -> None:
+        results["write"] = await call(server, "write_io_data", device_name="pn-device-01", slot=1, subslot=2, data=[5])
+
+    with anyio.fail_after(10):
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(write)
+            await partial.wait()
+            if trigger == "disconnect":
+                server.client.shutdown()
+    result = results["write"]
+    assert result["success"] is False
+    assert (result["meta"]["outcome"], result["meta"]["request_sent"]) == ("unknown", True)
+    assert "may have been applied" in result["error"]
