@@ -1018,3 +1018,76 @@ async def test_request_cancel_scope_is_the_sdks_and_sees_cancellation() -> None:
     assert isinstance(seen["captured"], anyio.CancelScope)
     assert seen["captured"] is seen["sdk_scope"]
     assert seen["cancelled_before"] is False and seen["cancelled_after"] is True
+
+
+class NoCheckpointStreamSyncClose(NoCheckpointStream):
+    """Also closes without a checkpoint, so nothing between the gate and the tool's return yields."""
+
+    async def __aexit__(self, *exc_info) -> None:
+        self.transport.close()
+
+
+async def test_server_still_answers_after_a_same_step_cancel(monkeypatch) -> None:
+    """The real SDK RequestResponder.cancel() runs in the same loop step as the connect completing. The gate
+    refuses the write; the tool must then end as a cancellation - not reply a second time, which would trip
+    the SDK's `assert not self._completed` and could take the server down."""
+    from mcp.server.lowlevel.server import request_ctx
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    received: list[bytes] = []
+
+    async def record(stream) -> None:
+        async with stream:
+            try:
+                received.append(await stream.receive())
+            except (anyio.EndOfStream, anyio.BrokenResourceError):
+                pass
+
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    config = ProfinetConfig(
+        backend="mock",
+        mock_port=listener.extra(SocketAttribute.local_port),
+        max_retries=0,
+        timeout=5,
+        writes_enabled=True,
+    )
+    server = ProfinetMCPServer(config)
+    hold: dict = {}
+    real_connect = anyio.connect_tcp
+
+    async def connect_and_hold(*args, **kwargs):
+        stream = await real_connect(*args, **kwargs)
+        context = request_ctx.get()
+        hold["responder"] = context.session._in_flight[context.request_id]
+        go = anyio.Event()
+        hold["go"] = go
+        await go.wait()  # resumes in the loop step right after the test sets it
+        return NoCheckpointStreamSyncClose(stream)
+
+    monkeypatch.setattr(anyio, "connect_tcp", connect_and_hold)
+    results: dict = {}
+    with anyio.fail_after(30):
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(listener.serve, record)
+            async with create_connected_server_and_client_session(server.mcp) as client:
+
+                async def write() -> None:
+                    try:
+                        results["write"] = await client.call_tool(
+                            "write_io_data", {"device_name": "x", "slot": 1, "subslot": 2, "data": [1]}
+                        )
+                    except Exception as exc:  # noqa: BLE001 - "Request cancelled" may surface as an error
+                        results["write"] = exc
+
+                async with anyio.create_task_group() as calls:
+                    calls.start_soon(write)
+                    while "go" not in hold:
+                        await anyio.sleep(0.01)
+                    hold["go"].set()  # the connect completes ...
+                    await hold["responder"].cancel()  # ... and the SDK's own cancel() runs in the same step
+                    while "write" not in results:
+                        await anyio.sleep(0.01)
+                ping = await client.call_tool("ping", {})
+            tg.cancel_scope.cancel()
+    assert ping.isError is False and json.loads(ping.content[0].text)["success"] is True
+    assert received == []  # and the cancelled write never reached the device

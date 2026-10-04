@@ -16,12 +16,13 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import anyio
+import anyio.lowlevel
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import Field, ValidationError
 
 from . import __version__, validation
-from .backends import DeviceRejected, RateLimited, RequestNotSent, tool_call
+from .backends import ClientCancelled, DeviceRejected, RateLimited, RequestNotSent, tool_call
 
 try:  # private mcp<2 API (pinned in pyproject.toml); tests/test_tools.py fails if it moves
     from mcp.server.lowlevel.server import request_ctx as _request_ctx
@@ -226,12 +227,11 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
         not_sent = outcome(tool, "not_sent", False)
 
-        @functools.wraps(fn)
-        async def wrapper(*args: Any, **kwargs: Any) -> Envelope:
+        async def run(scope: Any, args: tuple, kwargs: dict) -> Envelope:
             try:
                 # The overall deadline of every device request counts from here; the request's cancel scope
                 # lets the pre-send gate see a cancellation that anyio has not delivered yet.
-                with tool_call(cancel_scope=request_cancel_scope()):
+                with tool_call(cancel_scope=scope):
                     result = await fn(*args, **kwargs)
             except validation.InvalidArgument as exc:
                 return err(tool, f"Invalid arguments: {exc}", not_sent)
@@ -242,6 +242,9 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
                 return err(tool, str(exc), backend_meta(refused=True, **not_sent))
             except OperationNotImplemented as exc:
                 return err(tool, str(exc), backend_meta(not_implemented=True, **not_sent))
+            except ClientCancelled as exc:
+                log.warning("%s: %s", tool, exc)  # stderr: the client was told "Request cancelled" already
+                return err(tool, str(exc), backend_meta(**not_sent))
             except (BackendNotConfigured, RequestNotSent) as exc:
                 return err(tool, str(exc), backend_meta(**not_sent))
             except DeviceRejected as exc:
@@ -256,6 +259,18 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
             if result.get("success"):
                 result["meta"].update(outcome(tool, "written", True))
             return result
+
+        @functools.wraps(fn)
+        async def wrapper(*args: Any, **kwargs: Any) -> Envelope:
+            scope = request_cancel_scope()
+            envelope_ = await run(scope, args, kwargs)
+            if getattr(scope, "cancel_called", False):
+                # The SDK has already answered "Request cancelled"; a second reply would trip its
+                # `assert not self._completed` and could take the server down. End as the cancellation it
+                # is (the SDK suppresses it) instead of returning an envelope.
+                log.warning("%s: the MCP client cancelled the call; %s", tool, envelope_.get("error") or "done")
+                await anyio.lowlevel.checkpoint_if_cancelled()
+            return envelope_
 
         return wrapper
 
