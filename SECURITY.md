@@ -3,10 +3,10 @@
 ## What this server is, in security terms
 
 This repository is a bridge between a language model and a PROFINET IO
-network. The MCP server speaks stdio to its client and is meant to speak
-PROFINET (DCP for discovery and naming, I/O data exchange with IO devices) on
-an Ethernet interface of the host. That puts the trust boundary *inside* the
-server: whatever the model decides to call, the network is asked to do.
+network. The MCP server speaks stdio to its client and, with
+`PROFINET_BACKEND=network`, speaks PROFINET on an Ethernet interface of the
+host. That puts the trust boundary *inside* the server: whatever the model
+decides to call, the network is asked to do.
 
 PROFINET IO was designed for an isolated control network. In its classic form
 it carries no authentication or encryption: anything on the same Ethernet
@@ -19,14 +19,15 @@ application on the office network.
 ## Running it safely
 
 - **Start with the mock.** `profinet-mock-server` simulates an IO device so
-  PROFINET tooling can be exercised without touching real plant. Do that
-  first, every time. The mock listens on `127.0.0.1` by default and accepts
-  writes from anyone who can connect, so keep it there.
-- **Turn writes off until you mean otherwise.** `write_io_data` and
-  `write_device_by_alias` change physical outputs. They are currently enabled
-  unless you set `PROFINET_WRITES_ENABLED=false` in the server's environment,
-  so set it explicitly for anything that is not a lab bench. There is no undo,
-  and a language model will call a tool it has been given.
+  PROFINET tooling can be exercised without touching real plant
+  (`PROFINET_BACKEND=mock`). Do that first, every time. The mock listens on
+  `127.0.0.1` by default and accepts writes, renames and IP changes from
+  anyone who can connect, so keep it there.
+- **Leave writes off unless you mean otherwise.** `write_io_data` and
+  `write_device_by_alias` change physical outputs. They are refused unless
+  `PROFINET_WRITES_ENABLED=true` is set in the server's environment (the
+  default is `false`). Only enable it on a lab bench. There is no undo, and a
+  language model will call a tool it has been given.
 - **Leave configuration commands off.** `set_device_name` and `set_device_ip`
   are refused unless `PROFINET_CONFIG_CMDS_ENABLED=true`. Renaming or
   re-addressing a device in a running plant takes it away from the IO
@@ -41,10 +42,16 @@ application on the office network.
 - **Never point it at a safety system.** Safety-instrumented functions,
   including PROFIsafe devices, are out of scope for this repository.
 
-The PROFINET client in `profinet-python` is still a scaffold (see the
-[README](README.md#status)): it does not send or receive PROFINET frames yet.
-That does not make the advice above optional: the switches it describes are
-the ones that will gate real traffic once it is sent.
+What the server sends on a real network today (see the
+[README](README.md#status)): with `PROFINET_BACKEND=network`, only DCP
+Identify All requests, a read-only multicast that any engineering tool sends,
+and only when `discover_devices`, `get_device_info` or
+`test_device_communication` is called. Cyclic I/O and DCP Set (name, IP,
+identification signal) are not implemented there and are refused without
+sending anything. That does not make the advice above optional: the switches
+it describes are the ones that will gate real traffic once more of PROFINET
+is implemented. With the default `PROFINET_BACKEND=none` the server contacts
+nothing.
 
 ## Supported versions
 
