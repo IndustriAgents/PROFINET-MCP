@@ -17,7 +17,10 @@ Requests (``op`` selects the operation):
   DCP Set IP parameters (``gateway`` optional, ``0.0.0.0`` means none).
 
 Every answer is ``{"success": true, "data": ...}`` or
-``{"success": false, "error": "..."}``.
+``{"success": false, "error": "...", "rejected": true}`` when the request was
+refused before anything changed (bad request, unknown device, rule broken).
+``{"success": false, "error": "..."}`` *without* ``"rejected": true`` means an
+internal failure: the change may or may not have been applied.
 """
 
 from __future__ import annotations
@@ -30,13 +33,15 @@ import os
 import random
 import re
 import signal
+import sys
+import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from dotenv import find_dotenv, load_dotenv
+from dotenv import dotenv_values, find_dotenv
 from rich.console import Console
 
 console = Console()
@@ -75,7 +80,19 @@ DEFAULT_DEVICES: list[dict[str, Any]] = [
 
 
 class MockError(ValueError):
-    """A request or a devices file the mock cannot accept."""
+    """A request or a devices file the mock cannot accept.
+
+    Handlers raise it only *before* changing any state, so a request answered with it (and
+    ``"rejected": true``) is guaranteed to have changed nothing.
+    """
+
+
+def log(message: str, **options: Any) -> None:
+    """Console output that can never fail a request (e.g. a closed stdout pipe)."""
+    try:
+        console.print(message, **options)
+    except Exception:  # noqa: BLE001 - logging must not change the outcome of a request
+        pass
 
 
 class ConfigError(ValueError):
@@ -347,7 +364,7 @@ class ProfinetMockServer:
         self._running = True
         host = self.config.host
         shown = f"[{host}]" if ":" in host else host
-        console.print(f"PROFINET mock listening on {shown}:{self.port}", markup=False, highlight=False)
+        log(f"PROFINET mock listening on {shown}:{self.port}", markup=False, highlight=False)
         self._update_task = asyncio.create_task(self._update_loop())
 
     async def stop(self) -> None:
@@ -374,17 +391,20 @@ class ProfinetMockServer:
                     for idx in range(len(area.buffer)):
                         area.buffer[idx] = (area.buffer[idx] + random.randint(0, 5)) & 0xFF
             if self.config.verbose:
-                console.print("[cyan]Updated simulated input values[/cyan]")
+                log("[cyan]Updated simulated input values[/cyan]")
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
-        console.print(f"[yellow]Client connected {peer}[/yellow]")
+        log(f"[yellow]Client connected {peer}[/yellow]")
         try:
             while True:
                 try:
                     line = await reader.readline()
                 except (asyncio.LimitOverrunError, ValueError):
-                    await self._send(writer, {"success": False, "error": f"Request longer than {MAX_LINE_BYTES} bytes"})
+                    await self._send(
+                        writer,
+                        {"success": False, "error": f"Request longer than {MAX_LINE_BYTES} bytes", "rejected": True},
+                    )
                     break
                 if not line:
                     break
@@ -394,11 +414,11 @@ class ProfinetMockServer:
                 try:
                     request = json.loads(line)
                 except (json.JSONDecodeError, UnicodeDecodeError):
-                    await self._send(writer, {"success": False, "error": "Invalid JSON"})
+                    await self._send(writer, {"success": False, "error": "Invalid JSON", "rejected": True})
                     continue
                 response = self.handle_request(request)
                 if self.config.verbose:
-                    console.print(f"[cyan]{peer} {request!r} -> {response!r}[/cyan]", markup=False)
+                    log(f"[cyan]{peer} {request!r} -> {response!r}[/cyan]", markup=False)
                 await self._send(writer, response)
         except ConnectionError:
             pass
@@ -408,12 +428,12 @@ class ProfinetMockServer:
                 await writer.wait_closed()
             except ConnectionError:
                 pass
-            console.print(f"[yellow]Client disconnected {peer}[/yellow]")
+            log(f"[yellow]Client disconnected {peer}[/yellow]")
 
     def handle_request(self, request: Any) -> dict[str, Any]:
         """Answer one decoded request; never raises."""
         if not isinstance(request, dict):
-            return {"success": False, "error": "Request must be a JSON object"}
+            return {"success": False, "error": "Request must be a JSON object", "rejected": True}
         op = request.get("op")
         handler = (
             {
@@ -428,12 +448,12 @@ class ProfinetMockServer:
             else None
         )
         if handler is None:
-            return {"success": False, "error": f"Unknown op {op!r}"}
+            return {"success": False, "error": f"Unknown op {op!r}", "rejected": True}
         try:
             return {"success": True, "data": handler(request)}
-        except MockError as exc:
-            return {"success": False, "error": str(exc)}
-        except Exception as exc:  # keep the connection alive whatever happens
+        except MockError as exc:  # raised before any change: nothing was applied
+            return {"success": False, "error": str(exc), "rejected": True}
+        except Exception as exc:  # keep the connection alive; the change may have happened
             return {"success": False, "error": f"Internal mock error: {exc!r}"}
 
     # -- lookups -------------------------------------------------------------
@@ -506,7 +526,7 @@ class ProfinetMockServer:
         device = self._device_by_mac(request.get("mac"))
         duration = _int_field(request.get("duration_s", 5), "duration_s", 1, MAX_IDENTIFY_SECONDS)
         device.identify_until = time.time() + duration
-        console.print(f"[magenta]{device.name} ({device.mac}) flashing its LED for {duration}s[/magenta]")
+        log(f"[magenta]{device.name} ({device.mac}) flashing its LED for {duration}s[/magenta]")
         return {"device_name": device.name, "mac_address": device.mac, "identify_duration_s": duration}
 
     def _op_set_name(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -583,6 +603,11 @@ def parse_args(argv: Sequence[str] | None = None, environ: Mapping[str, str] | N
     parser.add_argument(
         "--verbose", action="store_true", default=defaults.verbose, help="log every request (MOCK_PROFINET_VERBOSE)"
     )
+    parser.add_argument(
+        "--exit-on-stdin-eof",
+        action="store_true",
+        help="stop when stdin closes, e.g. because the process that started the mock died (used by the tests)",
+    )
     args = parser.parse_args(argv)
     if not 0 <= args.port <= 65535:
         parser.error("--port must be between 0 and 65535")
@@ -591,12 +616,26 @@ def parse_args(argv: Sequence[str] | None = None, environ: Mapping[str, str] | N
     return args
 
 
-async def run_server(config: MockConfig, devices: list[MockDevice] | None = None) -> None:
+async def run_server(
+    config: MockConfig, devices: list[MockDevice] | None = None, *, exit_on_stdin_eof: bool = False
+) -> None:
     server = ProfinetMockServer(config, devices)
     await server.start()
 
     loop = asyncio.get_running_loop()
     stop = asyncio.Event()
+    if exit_on_stdin_eof:
+        # The parent holds the write end of our stdin. If it exits - even when killed - the pipe
+        # closes, read() returns, and the mock stops instead of lingering as an orphan.
+        def watch_stdin() -> None:
+            try:
+                while sys.stdin.buffer.read(4096):
+                    pass
+            except (OSError, ValueError):
+                pass
+            loop.call_soon_threadsafe(stop.set)
+
+        threading.Thread(target=watch_stdin, name="stdin-eof-watch", daemon=True).start()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(sig, stop.set)
@@ -606,13 +645,33 @@ async def run_server(config: MockConfig, devices: list[MockDevice] | None = None
     try:
         await stop.wait()
     finally:
-        console.print("[red]Stopping PROFINET mock...[/red]")
+        log("[red]Stopping PROFINET mock...[/red]")
         await server.stop()
 
 
+def load_discovered_dotenv(path: str) -> list[str]:
+    """Apply MOCK_PROFINET_* settings from an automatically found .env; return the keys ignored."""
+    ignored = []
+    for name, value in dotenv_values(path).items():
+        key = name.strip().upper()
+        if value is None or key in os.environ:
+            continue
+        if not key.startswith("MOCK_PROFINET_"):
+            ignored.append(name)
+            continue
+        os.environ[key] = value
+    return ignored
+
+
 def main(argv: Sequence[str] | None = None) -> None:
-    # Settings may come from a .env file in the working directory (or a parent).
-    load_dotenv(find_dotenv(usecwd=True))
+    # Settings may come from a .env file in the working directory (or a parent); only the mock's own.
+    path = find_dotenv(usecwd=True)
+    if path:
+        for name in load_discovered_dotenv(path):
+            print(
+                f"profinet-mock-server: warning: ignoring {name} from {path} (only MOCK_PROFINET_* is read)",
+                file=sys.stderr,
+            )
     args = parse_args(argv)
     config = MockConfig(
         host=args.host,
@@ -626,7 +685,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     except MockError as exc:
         raise SystemExit(f"profinet-mock-server: {exc}") from None
     try:
-        asyncio.run(run_server(config, devices))
+        asyncio.run(run_server(config, devices, exit_on_stdin_eof=args.exit_on_stdin_eof))
     except KeyboardInterrupt:
         pass
 

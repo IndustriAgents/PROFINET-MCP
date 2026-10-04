@@ -4,6 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
+import subprocess
+import sys
+import textwrap
+import time
+from pathlib import Path
 
 import pytest
 
@@ -221,20 +228,21 @@ def test_bad_devices_files_are_rejected(spec, fragment: str) -> None:
 # -- configuration is read at run time, after load_dotenv ---------------------------
 
 
-def test_main_reads_settings_from_dotenv(tmp_path, monkeypatch) -> None:
-    for key in ("MOCK_PROFINET_PORT", "MOCK_PROFINET_UPDATE_INTERVAL", "MOCK_PROFINET_DEVICES_FILE"):
+def test_main_reads_settings_from_dotenv(tmp_path, monkeypatch, capsys) -> None:
+    for key in ("MOCK_PROFINET_PORT", "MOCK_PROFINET_UPDATE_INTERVAL", "MOCK_PROFINET_DEVICES_FILE", "LD_PRELOAD"):
         # set + delete so monkeypatch removes whatever load_dotenv() adds
         monkeypatch.setenv(key, "placeholder")
         monkeypatch.delenv(key)
     devices = tmp_path / "devices.json"
     devices.write_text(json.dumps([{"name": "from-env", "mac": "02:00:00:00:00:09", "ip": "10.0.0.9"}]))
     (tmp_path / ".env").write_text(
-        f"MOCK_PROFINET_PORT=5999\nMOCK_PROFINET_UPDATE_INTERVAL=2.5\nMOCK_PROFINET_DEVICES_FILE={devices}\n"
+        f"MOCK_PROFINET_PORT=5999\nmock_profinet_update_interval=2.5\nMOCK_PROFINET_DEVICES_FILE={devices}\n"
+        "LD_PRELOAD=/tmp/evil.so\n"
     )
     monkeypatch.chdir(tmp_path)
     seen = {}
 
-    async def fake_run_server(config, devices=None):
+    async def fake_run_server(config, devices=None, *, exit_on_stdin_eof=False):
         seen["config"] = config
         seen["devices"] = devices
 
@@ -243,6 +251,8 @@ def test_main_reads_settings_from_dotenv(tmp_path, monkeypatch) -> None:
     assert seen["config"].port == 5999
     assert seen["config"].update_interval == 2.5
     assert [d.name for d in seen["devices"]] == ["from-env"]
+    assert "LD_PRELOAD" not in os.environ  # only MOCK_PROFINET_* is taken from a discovered .env
+    assert "ignoring LD_PRELOAD" in capsys.readouterr().err
 
 
 def test_config_rejects_bad_values() -> None:
@@ -302,3 +312,132 @@ def test_inputs_change_but_outputs_hold() -> None:
         assert bytes(device.areas["1:2"].buffer) == b"\x07\x07\x07\x07"
 
     asyncio.run(scenario())
+
+
+# -- "rejected" means nothing changed; anything else may have ------------------------
+
+
+def snapshot(server: ProfinetMockServer) -> list:
+    return [
+        (d.name, d.mac, d.ip, d.subnet, d.gateway, d.identify_until, {k: bytes(a.buffer) for k, a in d.areas.items()})
+        for d in server.devices.values()
+    ]
+
+
+@pytest.mark.parametrize(
+    "request_",
+    [
+        {"op": "write", "device": "pn-device-01", "slot": 1, "subslot": 2, "data": [1] * 5},
+        {"op": "write", "device": "pn-device-01", "slot": 1, "subslot": 1, "data": [1]},
+        {"op": "write", "device": "pn-device-01", "slot": 1, "subslot": 2, "data": [1, 300]},
+        {"op": "identify", "mac": MAC, "duration_s": 0},
+        {"op": "set_name", "mac": MAC, "name": "Bad_Name"},
+        {"op": "set_ip", "mac": MAC, "ip": "10.0.0.20", "subnet": "255.255.255.0", "gateway": "10.9.9.9"},
+        {"op": "set_ip", "mac": "02:00:00:00:00:99", "ip": "10.0.0.20", "subnet": "255.255.255.0"},
+        {"op": "reboot"},
+        [1],
+    ],
+)
+def test_refusals_are_marked_rejected_and_change_nothing(server: ProfinetMockServer, request_) -> None:
+    before = snapshot(server)
+    response = server.handle_request(request_)
+    assert response["success"] is False and response["rejected"] is True, response
+    assert snapshot(server) == before
+
+
+def test_internal_errors_are_not_marked_rejected(server: ProfinetMockServer, monkeypatch) -> None:
+    """A failure after the change was applied must not claim that nothing happened."""
+
+    def write_then_fail(request):
+        server.devices["pn-device-01"].areas["1:2"].buffer[0] = 9
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(server, "_op_write", write_then_fail)
+    response = server.handle_request({"op": "write", "device": "pn-device-01", "slot": 1, "subslot": 2, "data": [9]})
+    assert response["success"] is False and "Internal mock error" in response["error"]
+    assert "rejected" not in response
+
+
+def test_a_broken_console_does_not_fail_identify(server: ProfinetMockServer, monkeypatch) -> None:
+    """Regression: identify applied the change, then a failing print turned it into an error."""
+
+    def broken_print(*args, **kwargs):
+        raise BrokenPipeError(32, "Broken pipe")
+
+    monkeypatch.setattr(mock.console, "print", broken_print)
+    data = ok(server.handle_request({"op": "identify", "mac": MAC, "duration_s": 3}))
+    assert data["identify_duration_s"] == 3
+    assert server.devices["pn-device-01"].identify_until is not None
+
+
+# -- the mock does not outlive the process that started it ------------------------------
+
+MOCK_SCRIPT = Path(mock.__file__).resolve()
+ORPHAN_TIMEOUT_S = float(os.environ.get("ORPHAN_TIMEOUT_S", "15"))
+
+
+def wait_gone(pid: int, timeout: float = ORPHAN_TIMEOUT_S) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def kill_if_alive(pid: int) -> None:
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def test_exits_when_stdin_closes(tmp_path) -> None:
+    proc = subprocess.Popen(
+        [sys.executable, str(MOCK_SCRIPT), "--port", "0", "--exit-on-stdin-eof"],
+        cwd=tmp_path,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        assert "listening on" in proc.stdout.readline()
+        proc.stdin.close()
+        assert proc.wait(timeout=ORPHAN_TIMEOUT_S) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="uses SIGKILL")
+def test_exits_when_its_parent_is_killed(tmp_path) -> None:
+    """Rule 11: a killed test run must not leave the mock running."""
+    parent_code = textwrap.dedent(
+        f"""
+        import subprocess, sys, time
+        mock = subprocess.Popen(
+            [sys.executable, {str(MOCK_SCRIPT)!r}, "--port", "0", "--exit-on-stdin-eof"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        mock.stdout.readline()  # listening
+        print(mock.pid, flush=True)
+        time.sleep(600)
+        """
+    )
+    parent = subprocess.Popen([sys.executable, "-c", parent_code], cwd=tmp_path, stdout=subprocess.PIPE, text=True)
+    mock_pid = None
+    try:
+        mock_pid = int(parent.stdout.readline())
+        os.kill(parent.pid, signal.SIGKILL)  # no cleanup code runs in the parent
+        parent.wait(timeout=10)
+        assert wait_gone(mock_pid), "the mock outlived its killed parent"
+    finally:
+        if parent.poll() is None:
+            parent.kill()
+            parent.wait(timeout=10)
+        if mock_pid is not None:
+            kill_if_alive(mock_pid)

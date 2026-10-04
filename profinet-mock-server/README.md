@@ -30,9 +30,11 @@ uv run --directory profinet-mock-server profinet-mock-server   # listens on 127.
 | `--update-interval` | `MOCK_PROFINET_UPDATE_INTERVAL` | `1.0` (seconds) |
 | `--devices` | `MOCK_PROFINET_DEVICES_FILE` | built-in device, below |
 | `--verbose` | `MOCK_PROFINET_VERBOSE` | off |
+| `--exit-on-stdin-eof` | – | off: stop when stdin closes (the tests use it so a killed test run leaves no mock behind) |
 
 The environment variables can also come from a `.env` file in the working
-directory (or a parent directory). Flags win over the environment.
+directory (or a parent directory); only `MOCK_PROFINET_*` keys are taken from
+it, anything else is ignored with a warning. Flags win over the environment.
 
 ## Simulated devices
 
@@ -77,8 +79,17 @@ Slots run 0-32767, subslots 1-65535, and areas hold 1-1440 bytes.
 
 ## Protocol
 
-Send one JSON object per line; the mock answers each with one line,
-`{"success": true, "data": ...}` or `{"success": false, "error": "..."}`.
+Send one JSON object per line; the mock answers each with one line:
+
+- `{"success": true, "data": ...}`;
+- `{"success": false, "error": "...", "rejected": true}` when the request was
+  refused before anything changed (malformed request, unknown device or area,
+  a rule broken);
+- `{"success": false, "error": "Internal mock error: ..."}` without
+  `"rejected"` when something failed while handling the request: the change
+  may or may not have been applied, and the MCP server reports it as
+  `outcome: "unknown"`.
+
 Malformed requests get an error answer and the connection stays open.
 
 | Request | What it does |
