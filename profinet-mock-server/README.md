@@ -36,7 +36,7 @@ directory (or a parent directory). Flags win over the environment.
 
 ## Simulated devices
 
-By default the mock simulates one IO device, `PN-DEVICE-01` (MAC
+By default the mock simulates one IO device, `pn-device-01` (MAC
 `00:11:22:33:44:55`, IP `192.168.1.100/24`, vendor `MockVendor`), with two I/O
 areas:
 
@@ -70,7 +70,9 @@ own devices instead:
 }
 ```
 
-`name`, `mac` and `ip` are required; names and MAC addresses must be unique.
+`name`, `mac` and `ip` are required; names and MAC addresses must be unique,
+and names must follow the same PROFINET station-name rules that `set_name`
+enforces (see below).
 Slots run 0-32767, subslots 1-65535, and areas hold 1-1440 bytes.
 
 ## Protocol
@@ -82,8 +84,8 @@ Malformed requests get an error answer and the connection stays open.
 | Request | What it does |
 |---------|--------------|
 | `{"op": "discover"}` | Lists every device (name, MAC, IP settings, vendor, I/O areas, whether it is flashing) |
-| `{"op": "read", "device": "PN-DEVICE-01", "slot": 1, "subslot": 1, "length": 8}` | Reads an I/O area as `raw_data_hex`; `length` is optional (whole area) and may not exceed the area |
-| `{"op": "write", "device": "PN-DEVICE-01", "slot": 1, "subslot": 2, "data": [1, 2, 3, 4]}` | Writes the start of an **output** area; inputs are refused, as are values outside 0-255 and payloads longer than the area |
+| `{"op": "read", "device": "pn-device-01", "slot": 1, "subslot": 1, "length": 8}` | Reads an I/O area as `raw_data_hex`; `length` is optional (whole area) and may not exceed the area |
+| `{"op": "write", "device": "pn-device-01", "slot": 1, "subslot": 2, "data": [1, 2, 3, 4]}` | Writes the start of an **output** area; inputs are refused, as are values outside 0-255 and payloads longer than the area |
 | `{"op": "identify", "mac": "00:11:22:33:44:55", "duration_s": 5}` | Simulates the DCP identification signal (flashing LED) |
 | `{"op": "set_name", "mac": "00:11:22:33:44:55", "name": "line1-io"}` | Simulates a DCP Set of the station name; enforces the PROFINET name rules (lowercase a-z, 0-9, `-`, dot-separated labels of up to 63 characters, 240 in total, not `port-xyz`, not an IP address) |
 | `{"op": "set_ip", "mac": "00:11:22:33:44:55", "ip": "10.0.0.20", "subnet": "255.255.255.0", "gateway": "10.0.0.1"}` | Simulates a DCP Set of the IP parameters; the gateway is optional (`0.0.0.0` means none) and must be inside the subnet |

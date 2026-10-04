@@ -33,7 +33,8 @@ def fails(response: dict, fragment: str) -> None:
 
 def test_discover_lists_default_device(server: ProfinetMockServer) -> None:
     (device,) = ok(server.handle_request({"op": "discover"}))
-    assert device["device_name"] == "PN-DEVICE-01"
+    assert device["device_name"] == "pn-device-01"
+    assert mock.check_station_name(device["device_name"])  # the default obeys the rules set_name enforces
     assert device["mac_address"] == MAC
     assert device["vendor"] == "MockVendor"
     assert {(a["slot"], a["subslot"], a["direction"]) for a in device["io_areas"]} == {
@@ -43,17 +44,18 @@ def test_discover_lists_default_device(server: ProfinetMockServer) -> None:
 
 
 def test_read_defaults_to_whole_area_and_lookup_ignores_case(server: ProfinetMockServer) -> None:
-    data = ok(server.handle_request({"op": "read", "device": "pn-device-01", "slot": 1, "subslot": 1}))
+    data = ok(server.handle_request({"op": "read", "device": "PN-Device-01", "slot": 1, "subslot": 1}))
     assert data["raw_data_hex"] == "00" * 8
+    assert data["device_name"] == "pn-device-01"
     assert data["direction"] == "input"
 
 
 def test_write_then_read_back_output(server: ProfinetMockServer) -> None:
     wrote = ok(
-        server.handle_request({"op": "write", "device": "PN-DEVICE-01", "slot": 1, "subslot": 2, "data": [1, 2, 3, 4]})
+        server.handle_request({"op": "write", "device": "pn-device-01", "slot": 1, "subslot": 2, "data": [1, 2, 3, 4]})
     )
     assert wrote["written_bytes"] == 4
-    back = ok(server.handle_request({"op": "read", "device": "PN-DEVICE-01", "slot": 1, "subslot": 2, "length": 4}))
+    back = ok(server.handle_request({"op": "read", "device": "pn-device-01", "slot": 1, "subslot": 2, "length": 4}))
     assert back["raw_data_hex"] == "01020304"
 
 
@@ -68,12 +70,12 @@ def test_write_then_read_back_output(server: ProfinetMockServer) -> None:
         ({"op": "reboot"}, "Unknown op"),
         ({"op": None}, "Unknown op"),
         ({"op": "read", "device": "NOPE", "slot": 1, "subslot": 1}, "not found"),
-        ({"op": "read", "device": "PN-DEVICE-01", "slot": "x", "subslot": 1}, "slot must be an integer"),
-        ({"op": "read", "device": "PN-DEVICE-01", "slot": True, "subslot": 1}, "slot must be an integer"),
-        ({"op": "read", "device": "PN-DEVICE-01", "slot": 1, "subslot": 0}, "subslot must be between"),
-        ({"op": "read", "device": "PN-DEVICE-01", "slot": 0, "subslot": 1}, "not found"),
-        ({"op": "read", "device": "PN-DEVICE-01", "slot": 1, "subslot": 1, "length": 9}, "cannot read 9"),
-        ({"op": "read", "device": "PN-DEVICE-01", "slot": 1, "subslot": 1, "length": 0}, "length must be between"),
+        ({"op": "read", "device": "pn-device-01", "slot": "x", "subslot": 1}, "slot must be an integer"),
+        ({"op": "read", "device": "pn-device-01", "slot": True, "subslot": 1}, "slot must be an integer"),
+        ({"op": "read", "device": "pn-device-01", "slot": 1, "subslot": 0}, "subslot must be between"),
+        ({"op": "read", "device": "pn-device-01", "slot": 0, "subslot": 1}, "not found"),
+        ({"op": "read", "device": "pn-device-01", "slot": 1, "subslot": 1, "length": 9}, "cannot read 9"),
+        ({"op": "read", "device": "pn-device-01", "slot": 1, "subslot": 1, "length": 0}, "length must be between"),
     ],
 )
 def test_bad_requests_return_errors(server: ProfinetMockServer, request_, fragment: str) -> None:
@@ -82,23 +84,23 @@ def test_bad_requests_return_errors(server: ProfinetMockServer, request_, fragme
 
 def test_write_rejects_oversized_payload_without_growing_buffer(server: ProfinetMockServer) -> None:
     fails(
-        server.handle_request({"op": "write", "device": "PN-DEVICE-01", "slot": 1, "subslot": 2, "data": [1] * 5}),
+        server.handle_request({"op": "write", "device": "pn-device-01", "slot": 1, "subslot": 2, "data": [1] * 5}),
         "cannot write 5",
     )
-    area = server.devices["PN-DEVICE-01"].areas["1:2"]
+    area = server.devices["pn-device-01"].areas["1:2"]
     assert len(area.buffer) == 4
 
 
 def test_write_rejects_out_of_range_bytes_and_input_areas(server: ProfinetMockServer) -> None:
     fails(
-        server.handle_request({"op": "write", "device": "PN-DEVICE-01", "slot": 1, "subslot": 2, "data": [256]}),
+        server.handle_request({"op": "write", "device": "pn-device-01", "slot": 1, "subslot": 2, "data": [256]}),
         "between 0 and 255",
     )
     fails(
-        server.handle_request({"op": "write", "device": "PN-DEVICE-01", "slot": 1, "subslot": 1, "data": [1]}),
+        server.handle_request({"op": "write", "device": "pn-device-01", "slot": 1, "subslot": 1, "data": [1]}),
         "input area",
     )
-    fails(server.handle_request({"op": "write", "device": "PN-DEVICE-01", "slot": 1, "subslot": 2, "data": []}), "list")
+    fails(server.handle_request({"op": "write", "device": "pn-device-01", "slot": 1, "subslot": 2, "data": []}), "list")
 
 
 # -- DCP-style operations --------------------------------------------------------
@@ -106,7 +108,7 @@ def test_write_rejects_out_of_range_bytes_and_input_areas(server: ProfinetMockSe
 
 def test_identify_marks_device_identifying(server: ProfinetMockServer) -> None:
     data = ok(server.handle_request({"op": "identify", "mac": MAC.upper().replace(":", "-"), "duration_s": 3}))
-    assert data == {"device_name": "PN-DEVICE-01", "mac_address": MAC, "identify_duration_s": 3}
+    assert data == {"device_name": "pn-device-01", "mac_address": MAC, "identify_duration_s": 3}
     (device,) = ok(server.handle_request({"op": "discover"}))
     assert device["identifying"] is True
     fails(server.handle_request({"op": "identify", "mac": "00:00:00:00:00:01"}), "No device with MAC")
@@ -115,9 +117,9 @@ def test_identify_marks_device_identifying(server: ProfinetMockServer) -> None:
 
 def test_set_name_renames_device(server: ProfinetMockServer) -> None:
     data = ok(server.handle_request({"op": "set_name", "mac": MAC, "name": "line1-io.cell-2"}))
-    assert data == {"mac_address": MAC, "device_name": "line1-io.cell-2", "previous_name": "PN-DEVICE-01"}
+    assert data == {"mac_address": MAC, "device_name": "line1-io.cell-2", "previous_name": "pn-device-01"}
     ok(server.handle_request({"op": "read", "device": "line1-io.cell-2", "slot": 1, "subslot": 1}))
-    fails(server.handle_request({"op": "read", "device": "PN-DEVICE-01", "slot": 1, "subslot": 1}), "not found")
+    fails(server.handle_request({"op": "read", "device": "pn-device-01", "slot": 1, "subslot": 1}), "not found")
 
 
 @pytest.mark.parametrize(
@@ -191,6 +193,8 @@ def test_devices_file_defines_custom_devices(tmp_path) -> None:
     [
         ([], "non-empty list"),
         ([{"name": "a", "mac": "zz", "ip": "10.0.0.1"}], "Invalid MAC"),
+        ([{"name": "PN-DEVICE-01", "mac": "02:00:00:00:00:01", "ip": "10.0.0.1"}], "lowercase"),
+        ([{"name": "bad_name", "mac": "02:00:00:00:00:01", "ip": "10.0.0.1"}], "may only contain"),
         ([{"name": "a", "mac": "02:00:00:00:00:01", "ip": "nope"}], "IPv4"),
         (
             [{"name": "a", "mac": "02:00:00:00:00:01", "ip": "10.0.0.1"}] * 2,
@@ -266,12 +270,12 @@ def test_tcp_round_trip_on_ephemeral_port() -> None:
 
         try:
             found = await ask({"op": "discover"})
-            assert [d["device_name"] for d in found["data"]] == ["PN-DEVICE-01"]
+            assert [d["device_name"] for d in found["data"]] == ["pn-device-01"]
             assert (await ask(b"{not json"))["error"] == "Invalid JSON"
             assert (await ask([1]))["success"] is False
-            wrote = await ask({"op": "write", "device": "PN-DEVICE-01", "slot": 1, "subslot": 2, "data": [9, 8]})
+            wrote = await ask({"op": "write", "device": "pn-device-01", "slot": 1, "subslot": 2, "data": [9, 8]})
             assert wrote["data"]["written_bytes"] == 2
-            back = await ask({"op": "read", "device": "PN-DEVICE-01", "slot": 1, "subslot": 2, "length": 2})
+            back = await ask({"op": "read", "device": "pn-device-01", "slot": 1, "subslot": 2, "length": 2})
             assert back["data"]["raw_data_hex"] == "0908"
         finally:
             writer.close()
@@ -284,7 +288,7 @@ def test_tcp_round_trip_on_ephemeral_port() -> None:
 def test_inputs_change_but_outputs_hold() -> None:
     async def scenario() -> None:
         server = ProfinetMockServer(MockConfig(host="127.0.0.1", port=0, update_interval=0.01))
-        device = server.devices["PN-DEVICE-01"]
+        device = server.devices["pn-device-01"]
         device.areas["1:2"].buffer[:] = b"\x07\x07\x07\x07"
         await server.start()
         try:

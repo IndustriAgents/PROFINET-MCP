@@ -36,18 +36,18 @@ async def test_mock_backend_drives_every_operation(mock_server) -> None:
     backend = backend_for(mock_server)
 
     devices, meta = await backend.discover(1.0)
-    assert [d["device_name"] for d in devices] == ["PN-DEVICE-01"]
+    assert [d["device_name"] for d in devices] == ["pn-device-01"]
     assert devices[0]["vendor"] == "MockVendor"  # the mock's own data, not a placeholder
     assert meta["backend"] == "mock" and meta["mock_endpoint"] == f"127.0.0.1:{mock_server.port}"
 
-    payload, meta = await backend.read_io("PN-DEVICE-01", 1, 1, 8)
+    payload, meta = await backend.read_io("pn-device-01", 1, 1, 8)
     assert payload == bytes(8) and meta["direction"] == "input"
 
-    result, _ = await backend.write_io("PN-DEVICE-01", 1, 2, b"\x0a\x0b")
+    result, _ = await backend.write_io("pn-device-01", 1, 2, b"\x0a\x0b")
     assert result == {"written_bytes": 2}
-    payload, _ = await backend.read_io("PN-DEVICE-01", 1, 2, 2)
+    payload, _ = await backend.read_io("pn-device-01", 1, 2, 2)
     assert payload == b"\x0a\x0b"
-    assert bytes(mock_server.devices["PN-DEVICE-01"].areas["1:2"].buffer[:2]) == b"\x0a\x0b"
+    assert bytes(mock_server.devices["pn-device-01"].areas["1:2"].buffer[:2]) == b"\x0a\x0b"
 
     result, _ = await backend.identify(MAC, 2)
     assert result["identify_duration_s"] == 2
@@ -56,7 +56,7 @@ async def test_mock_backend_drives_every_operation(mock_server) -> None:
     assert result["ip_address"] == "10.0.0.5"
 
     result, _ = await backend.set_name(MAC, "renamed-io")
-    assert result["previous_name"] == "PN-DEVICE-01"
+    assert result["previous_name"] == "pn-device-01"
     devices, _ = await backend.discover(1.0)
     assert devices[0]["device_name"] == "renamed-io" and devices[0]["ip_address"] == "10.0.0.5"
 
@@ -64,9 +64,9 @@ async def test_mock_backend_drives_every_operation(mock_server) -> None:
 async def test_mock_errors_are_reported_not_hidden(mock_server) -> None:
     backend = backend_for(mock_server)
     with pytest.raises(ProfinetClientError, match="Slot 0/subslot 1 not found"):
-        await backend.read_io("PN-DEVICE-01", 0, 1, 4)
+        await backend.read_io("pn-device-01", 0, 1, 4)
     with pytest.raises(ProfinetClientError, match="input area"):
-        await backend.write_io("PN-DEVICE-01", 1, 1, b"\x01")
+        await backend.write_io("pn-device-01", 1, 1, b"\x01")
     with pytest.raises(ProfinetClientError, match="No device with MAC"):
         await backend.identify("02:00:00:00:00:99", 1)
 
@@ -107,7 +107,7 @@ async def test_malformed_mock_answers_are_rejected(answer: bytes, fragment: str)
         try:
             backend = MockBackend("127.0.0.1", port, timeout=2, max_retries=0)
             with pytest.raises(ProfinetClientError, match=fragment):
-                await backend.read_io("PN-DEVICE-01", 1, 1, 4)
+                await backend.read_io("pn-device-01", 1, 1, 4)
         finally:
             tg.cancel_scope.cancel()
 
@@ -156,7 +156,7 @@ async def serve(fake: DroppingMock, task_group) -> int:
 
 
 CHANGES = [
-    ("write", lambda b: b.write_io("PN-DEVICE-01", 1, 2, b"\x01\x02")),
+    ("write", lambda b: b.write_io("pn-device-01", 1, 2, b"\x01\x02")),
     ("set_name", lambda b: b.set_name(MAC, "new-name")),
     ("set_ip", lambda b: b.set_ip(MAC, "10.0.0.2", "255.0.0.0", "0.0.0.0")),
     ("identify", lambda b: b.identify(MAC, 5)),

@@ -119,7 +119,7 @@ with the mock as its backend:
 }
 ```
 
-Ask it to discover devices: the answer comes from the mock's `PN-DEVICE-01`
+Ask it to discover devices: the answer comes from the mock's `pn-device-01`
 (vendor `MockVendor`) with `"backend": "mock"` in `meta`. To try the write and
 DCP configuration tools against the mock, add `"PROFINET_WRITES_ENABLED": "true"`
 and `"PROFINET_CONFIG_CMDS_ENABLED": "true"` to `env`.

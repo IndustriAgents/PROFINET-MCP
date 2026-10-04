@@ -303,9 +303,9 @@ async def test_without_a_backend_nothing_is_invented() -> None:
     server = ProfinetMCPServer(ProfinetConfig(config_cmds_enabled=True))
     for tool, args in [
         ("discover_devices", {}),
-        ("get_device_info", {"device_name": "PN-DEVICE-01"}),
-        ("read_io_data", {"device_name": "PN-DEVICE-01", "slot": 1, "subslot": 1, "data_length": 8}),
-        ("test_device_communication", {"device_name": "PN-DEVICE-01"}),
+        ("get_device_info", {"device_name": "pn-device-01"}),
+        ("read_io_data", {"device_name": "pn-device-01", "slot": 1, "subslot": 1, "data_length": 8}),
+        ("test_device_communication", {"device_name": "pn-device-01"}),
         ("identify_device", {"device_mac": MAC}),
     ]:
         result = await call(server, tool, **args)
@@ -354,6 +354,7 @@ async def test_alias_tools(tmp_path) -> None:
                 "line1_inputs": {"device_name": "line1-io", "slot": 1, "subslot": 1, "data_length": 4},
                 "line1_outputs": {"device_name": "line1-io", "slot": 1, "subslot": 2, "data_length": 2},
                 "broken_slot": {"device_name": "line1-io", "slot": "one"},
+                "no_slot": {"device_name": "line1-io", "data_length": 2},
                 "not_an_object": 5,
             }
         )
@@ -362,7 +363,13 @@ async def test_alias_tools(tmp_path) -> None:
 
     listed = await call(server, "list_devices")
     assert listed["success"] is True
-    assert [d["alias"] for d in listed["data"]["devices"]] == ["line1_inputs", "line1_outputs", "broken_slot"]
+    assert [d["alias"] for d in listed["data"]["devices"]] == [
+        "line1_inputs",
+        "line1_outputs",
+        "broken_slot",
+        "no_slot",
+    ]
+    assert listed["data"]["devices"][3]["slot"] is None
     assert "not_an_object" in listed["data"]["warning"]
 
     result = await call(server, "read_device_by_alias", alias="line1_inputs")
@@ -374,6 +381,8 @@ async def test_alias_tools(tmp_path) -> None:
 
     result = await call(server, "read_device_by_alias", alias="broken_slot")
     assert result["success"] is False and "slot must be an integer" in result["error"]
+    result = await call(server, "read_device_by_alias", alias="no_slot")
+    assert result["success"] is False and "no slot given" in result["error"]
     result = await call(server, "read_device_by_alias", alias="nope")
     assert result["success"] is False and "line1_inputs" in result["error"]
 
@@ -436,11 +445,11 @@ async def test_mock_backend_end_to_end_in_process(mock_server) -> None:
     assert isinstance(server.client.backend, MockBackend)
     found = await call(server, "discover_devices")
     assert found["data"]["devices"][0]["vendor"] == "MockVendor"
-    wrote = await call(server, "write_io_data", device_name="PN-DEVICE-01", slot=1, subslot=2, data=[4, 3, 2, 1])
+    wrote = await call(server, "write_io_data", device_name="pn-device-01", slot=1, subslot=2, data=[4, 3, 2, 1])
     assert wrote["success"] is True
-    back = await call(server, "read_io_data", device_name="PN-DEVICE-01", slot=1, subslot=2, data_length=4)
+    back = await call(server, "read_io_data", device_name="pn-device-01", slot=1, subslot=2, data_length=4)
     assert back["data"]["raw_data_hex"] == "04030201"
-    refused = await call(server, "write_io_data", device_name="PN-DEVICE-01", slot=1, subslot=1, data=[1])
+    refused = await call(server, "write_io_data", device_name="pn-device-01", slot=1, subslot=1, data=[1])
     assert refused["success"] is False and "input area" in refused["error"]
 
 

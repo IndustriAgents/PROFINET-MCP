@@ -96,6 +96,8 @@ def device_identifier(value: str, field: str = "device_name") -> str:
 def io_address(slot: object, subslot: object, *, source: str = "") -> tuple[int, int]:
     """Check slot/subslot numbers (used for device-map entries, which skip schema validation)."""
     prefix = f"{source}: " if source else ""
+    if slot is None:
+        raise InvalidArgument(f"{prefix}no slot given (DEVICE_MAP_FILE entries must name their slot)")
     for name, value, low, high in (("slot", slot, 0, MAX_SLOT), ("subslot", subslot, 1, MAX_SUBSLOT)):
         if isinstance(value, bool) or not isinstance(value, int):
             raise InvalidArgument(f"{prefix}{name} must be an integer, got {value!r}")

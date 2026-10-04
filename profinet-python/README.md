@@ -74,7 +74,7 @@ Booleans accept `true`/`false`, `1`/`0`, `yes`/`no`, `y`/`n`, `on`/`off` and
 ```json
 {
   "line1_inputs": {
-    "device_name": "PN-DEVICE-01",
+    "device_name": "pn-device-01",
     "ip_address": "192.168.1.100",
     "description": "Line 1 digital inputs",
     "slot": 1,
@@ -84,7 +84,8 @@ Booleans accept `true`/`false`, `1`/`0`, `yes`/`no`, `y`/`n`, `on`/`off` and
 }
 ```
 
-`slot`, `subslot` and `data_length` default to `0`, `1` and `8`. The file is
+`slot` is required (an alias without one is reported as an error rather than
+guessed); `subslot` defaults to `1` and `data_length` to `8`. The file is
 re-read when it changes; if it cannot be parsed, `list_devices` and `ping`
 report the error.
 

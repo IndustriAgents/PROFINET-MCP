@@ -64,8 +64,8 @@ async def test_every_tool_against_the_mock(tmp_path: Path, mock_process: MockPro
     device_map.write_text(
         json.dumps(
             {
-                "inputs": {"device_name": "PN-DEVICE-01", "slot": 1, "subslot": 1, "data_length": 8},
-                "outputs": {"device_name": "PN-DEVICE-01", "slot": 1, "subslot": 2, "data_length": 4},
+                "inputs": {"device_name": "pn-device-01", "slot": 1, "subslot": 1, "data_length": 8},
+                "outputs": {"device_name": "pn-device-01", "slot": 1, "subslot": 2, "data_length": 4},
             }
         )
     )
@@ -97,24 +97,24 @@ async def test_every_tool_against_the_mock(tmp_path: Path, mock_process: MockPro
             assert found["success"] is True and found["meta"]["backend"] == "mock"
             (device,) = found["data"]["devices"]
             assert (device["device_name"], device["vendor"], device["mac_address"]) == (
-                "PN-DEVICE-01",
+                "pn-device-01",
                 "MockVendor",
                 MAC,
             )
 
             info = await call(session, "get_device_info", device_name="192.168.1.100")
-            assert info["data"]["device_name"] == "PN-DEVICE-01"
-            reach = await call(session, "test_device_communication", device_name="PN-DEVICE-01")
+            assert info["data"]["device_name"] == "pn-device-01"
+            reach = await call(session, "test_device_communication", device_name="pn-device-01")
             assert reach["success"] is True and reach["data"]["reachable"] is True
 
-            read = await call(session, "read_io_data", device_name="PN-DEVICE-01", slot=1, subslot=1, data_length=8)
+            read = await call(session, "read_io_data", device_name="pn-device-01", slot=1, subslot=1, data_length=8)
             assert read["success"] is True and len(read["data"]["bytes"]) == 8 and read["meta"]["backend"] == "mock"
 
             wrote = await call(
-                session, "write_io_data", device_name="PN-DEVICE-01", slot=1, subslot=2, data=[1, 2, 3, 4]
+                session, "write_io_data", device_name="pn-device-01", slot=1, subslot=2, data=[1, 2, 3, 4]
             )
             assert wrote["success"] is True and wrote["data"]["written_bytes"] == 4
-            back = await call(session, "read_io_data", device_name="PN-DEVICE-01", slot=1, subslot=2, data_length=4)
+            back = await call(session, "read_io_data", device_name="pn-device-01", slot=1, subslot=2, data_length=4)
             assert back["data"]["raw_data_hex"] == "01020304"
 
             aliases = await call(session, "list_devices")
@@ -135,7 +135,7 @@ async def test_every_tool_against_the_mock(tmp_path: Path, mock_process: MockPro
             )
             assert new_ip["success"] is True
             renamed = await call(session, "set_device_name", device_mac=MAC, name="line1-io")
-            assert renamed["success"] is True and renamed["data"]["previous_name"] == "PN-DEVICE-01"
+            assert renamed["success"] is True and renamed["data"]["previous_name"] == "pn-device-01"
             info = await call(session, "get_device_info", device_name="line1-io")
             assert info["data"]["ip_address"] == "192.168.1.120"
 
@@ -157,11 +157,11 @@ async def test_defaults_are_read_only(tmp_path: Path, mock_process: MockProcess)
         ):
             ping = await call(session, "ping")
             assert ping["data"]["writes_enabled"] is False and ping["data"]["config_cmds_enabled"] is False
-            refused = await call(session, "write_io_data", device_name="PN-DEVICE-01", slot=1, subslot=2, data=[5])
+            refused = await call(session, "write_io_data", device_name="pn-device-01", slot=1, subslot=2, data=[5])
             assert refused["success"] is False and "PROFINET_WRITES_ENABLED" in refused["error"]
             refused = await call(session, "set_device_name", device_mac=MAC, name="other")
             assert refused["success"] is False and "PROFINET_CONFIG_CMDS_ENABLED" in refused["error"]
-            back = await call(session, "read_io_data", device_name="PN-DEVICE-01", slot=1, subslot=2, data_length=4)
+            back = await call(session, "read_io_data", device_name="pn-device-01", slot=1, subslot=2, data_length=4)
             assert back["data"]["raw_data_hex"] == "00000000"  # nothing was written
 
 
@@ -230,9 +230,9 @@ def test_stdout_carries_only_json_rpc(tmp_path: Path, mock_process: MockProcess,
         calls = [
             ("ping", {}),
             ("get_connection_status", {}),
-            ("read_io_data", {"device_name": "PN-DEVICE-01", "slot": 1, "subslot": 1, "data_length": 8}),
-            ("read_io_data", {"device_name": "PN-DEVICE-01", "slot": "x", "subslot": 1, "data_length": 8}),
-            ("write_io_data", {"device_name": "PN-DEVICE-01", "slot": 1, "subslot": 2, "data": [1]}),
+            ("read_io_data", {"device_name": "pn-device-01", "slot": 1, "subslot": 1, "data_length": 8}),
+            ("read_io_data", {"device_name": "pn-device-01", "slot": "x", "subslot": 1, "data_length": 8}),
+            ("write_io_data", {"device_name": "pn-device-01", "slot": 1, "subslot": 2, "data": [1]}),
             ("load_gsd_file", {"filepath": str(SAMPLE_GSDML)}),
         ]
         if backend != "network":  # network discovery would open a raw socket; tests never do that

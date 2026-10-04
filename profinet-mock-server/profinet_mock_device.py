@@ -58,7 +58,7 @@ _IP_LIKE_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
 
 DEFAULT_DEVICES: list[dict[str, Any]] = [
     {
-        "name": "PN-DEVICE-01",
+        "name": "pn-device-01",
         "mac": "00:11:22:33:44:55",
         "ip": "192.168.1.100",
         "subnet": "255.255.255.0",
@@ -244,6 +244,11 @@ def build_device(spec: Mapping[str, Any]) -> MockDevice:
     name = spec.get("name")
     if not isinstance(name, str) or not name.strip():
         raise MockError("each device needs a non-empty 'name'")
+    name = name.strip()
+    try:
+        check_station_name(name)  # the same NameOfStation rules set_name enforces
+    except MockError as exc:
+        raise MockError(f"device {name!r}: {exc}") from None
     ip = str(check_ipv4(spec.get("ip"), f"device {name!r} ip"))
     subnet = str(check_netmask(spec.get("subnet", "255.255.255.0")))
     gateway = str(check_ipv4(spec.get("gateway", "0.0.0.0"), f"device {name!r} gateway"))
@@ -272,7 +277,7 @@ def build_device(spec: Mapping[str, Any]) -> MockDevice:
         return None if value is None else str(value)
 
     return MockDevice(
-        name=name.strip(),
+        name=name,
         mac=normalize_mac(spec.get("mac")),
         ip=ip,
         subnet=subnet,

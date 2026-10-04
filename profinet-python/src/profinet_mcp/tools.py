@@ -150,7 +150,7 @@ class DeviceMap:
                 "device_name": spec.get("device_name"),
                 "ip_address": spec.get("ip_address"),
                 "description": spec.get("description"),
-                "slot": spec.get("slot", 0),
+                "slot": spec.get("slot"),
                 "subslot": spec.get("subslot", 1),
                 "data_length": spec.get("data_length", 8),
             }
@@ -396,7 +396,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         """read_io_data for the device, slot, subslot and length behind an alias from DEVICE_MAP_FILE."""
         device_name, spec = alias_spec(alias)
         source = f"alias {alias!r}"
-        slot, subslot = validation.io_address(spec.get("slot", 0), spec.get("subslot", 1), source=source)
+        slot, subslot = validation.io_address(spec.get("slot"), spec.get("subslot", 1), source=source)
         length = validation.data_length(spec.get("data_length", 8), source=source)
         return await read("read_device_by_alias", device_name, slot, subslot, length, alias=alias)
 
@@ -409,7 +409,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         if not config.writes_enabled:
             raise OperationRefused(WRITES_DISABLED)
         device_name, spec = alias_spec(alias)
-        slot, subslot = validation.io_address(spec.get("slot", 0), spec.get("subslot", 1), source=f"alias {alias!r}")
+        slot, subslot = validation.io_address(spec.get("slot"), spec.get("subslot", 1), source=f"alias {alias!r}")
         return await write("write_device_by_alias", device_name, slot, subslot, data, alias=alias)
 
     # -- GSDML -----------------------------------------------------------------------------
