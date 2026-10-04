@@ -28,10 +28,22 @@ application on the office network.
   `PROFINET_WRITES_ENABLED=true` is set in the server's environment (the
   default is `false`). Only enable it on a lab bench. There is no undo, and a
   language model will call a tool it has been given.
-- **Leave configuration commands off.** `set_device_name` and `set_device_ip`
-  are refused unless `PROFINET_CONFIG_CMDS_ENABLED=true`. Renaming or
-  re-addressing a device in a running plant takes it away from the IO
-  controller that expects it.
+- **Leave configuration commands off.** `set_device_name`, `set_device_ip` and
+  `identify_device` (DCP Set) need `PROFINET_CONFIG_CMDS_ENABLED=true` *and*
+  `PROFINET_WRITES_ENABLED=true`. Renaming or re-addressing a device in a
+  running plant takes it away from the IO controller that expects it.
+- **Set the switches where you control them.** The safety switches
+  (`PROFINET_*_ENABLED`) are honoured only from the real process environment
+  or a file you pass with `--env-file`. A `.env` the server discovers in its
+  working directory (or a parent) is ignored for them, with a warning on
+  stderr: when an MCP client launches the server, that directory is the
+  client's project, which you may not control. See
+  [`profinet-python/.env.example`](profinet-python/.env.example).
+- **A change is sent at most once.** Connecting may be retried, but once a
+  write or DCP command has gone out the server never re-sends it. If the reply
+  is lost, the tool returns `success: false` with `meta.outcome: "unknown"`:
+  the change may have been applied, so read the device back before trying
+  again.
 - **Do not expose the server beyond the host running the client.** It is a
   stdio process meant to run next to the MCP client, not a network service.
 - **Limit what the server's account can reach.** Real DCP and I/O traffic is
@@ -45,8 +57,8 @@ application on the office network.
 What the server sends on a real network today (see the
 [README](README.md#status)): with `PROFINET_BACKEND=network`, only DCP
 Identify All requests, a read-only multicast that any engineering tool sends,
-and only when `discover_devices`, `get_device_info` or
-`test_device_communication` is called. Cyclic I/O and DCP Set (name, IP,
+only when `discover_devices`, `get_device_info` or `test_device_communication`
+is called, and at most one every 2 seconds. Cyclic I/O and DCP Set (name, IP,
 identification signal) are not implemented there and are refused without
 sending anything. That does not make the advice above optional: the switches
 it describes are the ones that will gate real traffic once more of PROFINET
@@ -59,9 +71,9 @@ This project is pre-1.0. Security fixes land on `main`.
 
 ## Reporting a vulnerability
 
-Please report privately, by email to hi@industriagents.com. If this
-repository's **Security** tab shows a **Report a vulnerability** button, you
-can use GitHub private vulnerability reporting instead.
+Please report privately through GitHub's private vulnerability reporting:
+[open a draft security advisory](https://github.com/IndustriAgents/PROFINET-MCP/security/advisories/new).
+You can also email hi@industriagents.com.
 
 Please do not open a public issue for a vulnerability.
 

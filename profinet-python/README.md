@@ -34,9 +34,23 @@ Only JSON-RPC goes to stdout; logs go to stderr.
 |--------------------|-----------|
 | `none` (default) | Contacts nothing. Device tools return `success: false` explaining how to choose a backend. |
 | `mock` | Sends the mock's JSON-lines requests to `PROFINET_MOCK_HOST:PROFINET_MOCK_PORT`. One TCP connection per call; answers are checked (byte counts, confirmations) before a tool reports success. |
-| `network` | DCP Identify All on `PROFINET_INTERFACE` for `discover_devices`, `get_device_info` and `test_device_communication`. I/O and DCP Set tools return `success: false` ("Not implemented ...") and send nothing. |
+| `network` | DCP Identify All on `PROFINET_INTERFACE` for `discover_devices`, `get_device_info` and `test_device_communication`, at most once every 2 s. I/O and DCP Set tools return `success: false` ("Not implemented ...") and send nothing. |
 
 `meta.backend` in each envelope names the backend that answered.
+
+Tools that change a device (`write_io_data`, `write_device_by_alias`,
+`set_device_name`, `set_device_ip`, `identify_device`) also report
+`meta.outcome` and `meta.request_sent`:
+
+| `outcome` | `request_sent` | Meaning |
+|-----------|----------------|---------|
+| `written` | `true` | The device confirmed the change |
+| `rejected` | `true` | The device received the request and refused it |
+| `unknown` | `true` | Sent, but no usable reply: it may have been applied; check before retrying. It is never re-sent automatically. |
+| `not_sent` | `false` | Refused by a switch, invalid arguments, no backend, backend unreachable, or not implemented |
+
+Connecting to the mock is retried (`PROFINET_MAX_RETRIES`); a read whose reply
+is lost is sent again, but a write or DCP command never is.
 
 ## Configuration
 
@@ -45,19 +59,26 @@ block, or in a `.env` file in the working directory (or a parent directory).
 `--env-file PATH` loads a specific file instead. Values already in the
 environment win over the file. Settings are read when the server starts, and
 an unusable value (for example `PROFINET_WRITES_ENABLED=maybe`) stops it with
-a message on stderr.
+a message on stderr. [`.env.example`](.env.example) lists them all.
+
+**Safety switches (`PROFINET_*_ENABLED`) are read only from the real
+environment or `--env-file`.** In a `.env` that the server discovers by itself
+they are ignored, and stderr says so (`warning: ignoring
+PROFINET_WRITES_ENABLED from ...`): when an MCP client starts the server, the
+working directory is the client's project, which may not be trusted to turn
+writes on.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `PROFINET_BACKEND` | `none` | `none`, `mock` or `network`, see above |
-| `PROFINET_WRITES_ENABLED` | `false` | Set to `true` to allow `write_io_data` and `write_device_by_alias` |
-| `PROFINET_CONFIG_CMDS_ENABLED` | `false` | Set to `true` to allow `set_device_name` and `set_device_ip` |
+| `PROFINET_WRITES_ENABLED` | `false` | `true` allows tools that change a device (`write_io_data`, `write_device_by_alias`; also required by the DCP commands) |
+| `PROFINET_CONFIG_CMDS_ENABLED` | `false` | `true` (together with `PROFINET_WRITES_ENABLED`) allows `set_device_name`, `set_device_ip` and `identify_device` |
 | `PROFINET_MOCK_HOST` | `127.0.0.1` | Address of the mock IO device |
 | `PROFINET_MOCK_PORT` | `5600` | Port of the mock IO device |
 | `PROFINET_INTERFACE` | `eth0` | Ethernet interface for DCP discovery (`network` backend) |
-| `PROFINET_DCP_TIMEOUT` | `5` | Default discovery time, in seconds (0.1-60) |
+| `PROFINET_DCP_TIMEOUT` | `5` | Default discovery time, in seconds (0.5-60) |
 | `PROFINET_TIMEOUT` | `10` | Timeout for each request to the mock, in seconds |
-| `PROFINET_MAX_RETRIES` | `3` | Extra connection attempts to the mock (0-10) |
+| `PROFINET_MAX_RETRIES` | `3` | Extra connection attempts to the mock, and re-sends of a read whose reply was lost (0-10); changes are never re-sent |
 | `PROFINET_RETRY_BACKOFF_BASE` | `0.5` | First retry delay in seconds; doubles each attempt |
 | `PROFINET_CONTROLLER_IP` | `192.168.1.1` | Reported by `ping` only |
 | `PROFINET_NETWORK` | `192.168.1.0/24` | Reported by `ping` only |
@@ -95,6 +116,7 @@ report the error.
 profinet-python/
 ├── pyproject.toml
 ├── uv.lock
+├── .env.example        # every setting; safety switches only via the real env or --env-file
 ├── .python-version
 ├── src/profinet_mcp
 │   ├── __init__.py
@@ -121,4 +143,8 @@ uv run --no-sync pytest
 
 The integration tests start `../profinet-mock-server` on an OS-assigned port
 and drive the server over stdio with the MCP client SDK. No test opens a raw
-socket: DCP is tested against fake layer-2 transports.
+socket: DCP is tested against fake layer-2 transports. The safety tests are
+mutation-checked: each one fails when the protection it covers is removed.
+
+Dependency floors in `pyproject.toml` are the lowest versions the suite passes
+on; CI's `lowest-direct` job checks that with `--resolution lowest-direct`.

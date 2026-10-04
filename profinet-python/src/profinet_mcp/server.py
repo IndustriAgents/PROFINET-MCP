@@ -20,8 +20,9 @@ INSTRUCTIONS = """\
 PROFINET IO tools. Every tool returns {success, data, error, meta}; check `success` and read `error`.
 meta.backend says what answered: "mock" (profinet-mock-server, a simulator) or "network" (the real
 PROFINET network, where only DCP discovery is implemented). Writes and DCP configuration commands are
-disabled unless the operator enabled them; a refused call sends nothing. Call ping first to see the
-backend and which switches are on."""
+disabled unless the operator enabled them; a refused call sends nothing. Tools that change a device
+report meta.outcome (written, rejected, unknown, not_sent); after "unknown" the change may have been
+applied, so read the device back before retrying. Call ping first to see the backend and switches."""
 
 
 class EnvelopeFastMCP(FastMCP):

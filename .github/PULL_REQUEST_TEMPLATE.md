@@ -26,7 +26,7 @@
 - [ ] I tested against the mock IO device (`profinet-mock-server`, server started with `PROFINET_BACKEND=mock`).
 - [ ] Nothing was tested against production equipment.
 - [ ] `stdout` is still clean — all logging goes to `stderr`.
-- [ ] Writes and DCP configuration commands are still off by default.
+- [ ] Writes and DCP configuration commands are still off by default, their switches are still read only from the real environment or `--env-file`, and a change is still sent at most once.
 - [ ] I added or updated tests, and `pytest`, `ruff check` and `ruff format --check` pass locally (see [CONTRIBUTING.md](https://github.com/IndustriAgents/PROFINET-MCP/blob/main/CONTRIBUTING.md#testing-a-change)).
 - [ ] If I changed dependencies, I committed the updated `uv.lock`.
 - [ ] I updated the README (Status, Known issues, tool table) where relevant.

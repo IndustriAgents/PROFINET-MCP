@@ -26,10 +26,24 @@ envelope from a tool that talks to devices says which one answered in
 | `mock` | [`profinet-mock-server`](profinet-mock-server/README.md) over TCP (JSON lines) | Every tool |
 | `network` | The PROFINET network on `PROFINET_INTERFACE` (raw Ethernet) | DCP discovery: `discover_devices`, `get_device_info`, `test_device_communication` |
 
-The server is **read-only by default**: `write_io_data` and
-`write_device_by_alias` are refused unless `PROFINET_WRITES_ENABLED=true`, and
-`set_device_name` / `set_device_ip` unless `PROFINET_CONFIG_CMDS_ENABLED=true`.
-A refused call sends nothing.
+The server is **read-only by default**:
+
+- `write_io_data` and `write_device_by_alias` are refused unless
+  `PROFINET_WRITES_ENABLED=true`.
+- The DCP configuration commands `set_device_name`, `set_device_ip` and
+  `identify_device` need both `PROFINET_WRITES_ENABLED=true` and
+  `PROFINET_CONFIG_CMDS_ENABLED=true`.
+- These safety switches are read only from the real process environment (for
+  example the MCP client's `env` block) or a file passed with `--env-file`. A
+  `.env` that the server finds by itself in the working directory may set
+  connection settings, but a switch in it is ignored with a warning on stderr:
+  when a client starts the server, that directory is the client's project.
+- A refused call sends nothing, and a change is sent **at most once**: if the
+  reply to a write or DCP command is lost, the server does not retry; it
+  returns `success: false` with `meta.outcome: "unknown"` and an error saying
+  the change may have been applied. Every device-changing tool reports
+  `meta.outcome` (`written`, `rejected`, `unknown` or `not_sent`) and
+  `meta.request_sent`.
 
 ### Known issues and limitations
 
@@ -48,6 +62,9 @@ A refused call sends nothing.
   against real devices. It needs raw-socket privileges (root or
   `CAP_NET_RAW` on Linux, `/dev/bpf*` access on macOS). Reports from real
   networks are welcome.
+- Discovery on the `network` backend sends at most one DCP Identify All every
+  2 seconds; calls that come sooner are refused (`meta.retry_after_s`) so a
+  model cannot flood the network.
 - `PROFINET_CONTROLLER_IP`, `PROFINET_NETWORK` and `PROFINET_DCP_PORT` are
   reported by `ping` and `get_connection_status` but not used for anything.
 - No alarms, diagnostics, record data, topology (LLDP) or PROFINET security
@@ -146,25 +163,34 @@ first. All settings are listed under
 
 | Tool | What it does | `mock` | `network` |
 |------|--------------|:------:|:---------:|
-| `discover_devices(timeout?)` | Lists the devices that answer DCP Identify | ✓ | ✓ |
+| `discover_devices(timeout?)` | Lists the devices that answer DCP Identify (timeout 0.5-60 s) | ✓ | ✓ |
 | `get_device_info(device_name)` | Discovery details for one device, by station name, IP or MAC | ✓ | ✓ |
 | `test_device_communication(device_name)` | Checks that a device answers discovery | ✓ | ✓ |
 | `read_io_data(device_name, slot, subslot, data_length)` | Reads I/O data, returned as hex and byte values | ✓ | – |
 | `write_io_data(device_name, slot, subslot, data)` | Writes output bytes; needs `PROFINET_WRITES_ENABLED=true` | ✓ | – |
-| `identify_device(device_mac, duration_s=5)` | Makes a device flash its identification LED (DCP Signal) | ✓ | – |
-| `set_device_name(device_mac, name)` | DCP Set of the station name; needs `PROFINET_CONFIG_CMDS_ENABLED=true` | ✓ | – |
-| `set_device_ip(device_mac, ip_address, subnet_mask, gateway?)` | DCP Set of the IP suite; same switch as `set_device_name` | ✓ | – |
+| `identify_device(device_mac, duration_s=5)` | Makes a device flash its identification LED (DCP Signal); needs both switches | ✓ | – |
+| `set_device_name(device_mac, name)` | DCP Set of the station name; needs `PROFINET_WRITES_ENABLED=true` and `PROFINET_CONFIG_CMDS_ENABLED=true` | ✓ | – |
+| `set_device_ip(device_mac, ip_address, subnet_mask, gateway?)` | DCP Set of the IP suite; same switches as `set_device_name` | ✓ | – |
 | `list_devices` | Lists the aliases defined in `DEVICE_MAP_FILE` | local | local |
 | `read_device_by_alias(alias)` | `read_io_data` for the device and slot behind an alias | ✓ | – |
 | `write_device_by_alias(alias, data)` | `write_io_data` for an alias; same write switch | ✓ | – |
-| `load_gsd_file(filepath)` | Parses a GSDML file: identity, access points, modules and I/O sizes | local | local |
+| `load_gsd_file(filepath)` | Parses a GSDML file: identity, access points, modules, fixed and pluggable submodules, I/O sizes | local | local |
 | `ping` | Version, backend, settings and safety switches; contacts nothing | local | local |
 | `get_connection_status` | Settings plus a reachability check of the mock | ✓ | not checked |
 
 "–" means the tool returns `success: false` with a "Not implemented" error
 and sends nothing. Every tool has a description and documented, range-checked
-parameters in `tools/list`; bad arguments come back as `success: false`
-envelopes that name the argument.
+parameters in `tools/list`. Numbers are strict (`true`, `"1"` or `2.0` are not
+accepted as a slot or a byte value), and bad arguments come back as
+`success: false` envelopes that name the argument.
+
+## Third-party licences
+
+This repository is MIT-licensed. It depends on [Scapy](https://scapy.net),
+which is licensed GPL-2.0-or-later. Scapy is not vendored or modified here: it
+is installed as a regular dependency from PyPI, and the server imports it only
+when `PROFINET_BACKEND=network` sends a DCP request. If you redistribute a
+bundle that includes Scapy, its licence applies to that part.
 
 ## Part of IndustriConnect
 

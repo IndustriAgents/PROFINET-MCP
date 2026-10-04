@@ -32,8 +32,10 @@ that breaks one of these needs a reason in the pull request:
 2. **Read-only by default.** Tools that write I/O data change physical
    equipment. They are separated from the read tools and refused unless
    `PROFINET_WRITES_ENABLED=true`; the DCP configuration tools
-   (`set_device_name`, `set_device_ip`) are refused unless
-   `PROFINET_CONFIG_CMDS_ENABLED=true`. Both default to `false`.
+   (`set_device_name`, `set_device_ip`, `identify_device`) need that *and*
+   `PROFINET_CONFIG_CMDS_ENABLED=true`. Both default to `false`, and both are
+   read only from the real environment or `--env-file`, never from a `.env`
+   the server discovers by itself.
 3. **A mock for every protocol.** If you add a tool, the mock has to be able to
    answer it (with `PROFINET_BACKEND=mock`), or nobody can test it without a
    plant.
@@ -41,6 +43,9 @@ that breaks one of these needs a reason in the pull request:
    that actually happened and was confirmed by the backend. If a backend cannot
    do something, the tool says so (`success: false`, "Not implemented ...")
    and sends nothing.
+5. **A change reaches the device at most once.** Only connecting may be
+   retried. Once a write or DCP command may have gone out, a lost reply is
+   reported as `meta.outcome: "unknown"`, never retried.
 
 ## Getting set up
 
@@ -95,8 +100,14 @@ uv run --no-sync pytest
 
 The server's suite includes integration tests that start the mock on an
 OS-assigned port and drive the real MCP server over stdio with the MCP client
-SDK; no test opens a raw socket (DCP is tested against fake transports). The
-exact CI steps are in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+SDK; no test opens a raw socket (DCP is tested against fake transports). A
+third CI job, `lowest-direct`, installs every direct dependency at its lowest
+declared version and runs both suites, so raise a floor in `pyproject.toml`
+when you start relying on something newer. The exact CI steps are in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+Safety tests must be able to fail: when you add or change a safety switch,
+check that its test fails with the protection removed.
 If you add or rename a tool, update `EXPECTED_TOOLS` in
 `profinet-python/tests/test_tools.py` and the integration tests.
 
