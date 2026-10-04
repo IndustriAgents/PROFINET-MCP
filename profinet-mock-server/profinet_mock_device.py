@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from dotenv import dotenv_values, find_dotenv
+from dotenv import dotenv_values
 from rich.console import Console
 
 console = Console()
@@ -649,30 +649,69 @@ async def run_server(
         await server.stop()
 
 
-def load_discovered_dotenv(path: str) -> list[str]:
-    """Apply MOCK_PROFINET_* settings from an automatically found .env; return the keys ignored."""
-    ignored = []
+#: Directory of this script; the only place an implicit .env is read from (never the working directory).
+MOCK_DIR = Path(__file__).resolve().parent
+
+
+def mock_dotenv(directory: Path | None = None) -> Path | None:
+    """``profinet-mock-server/.env`` next to the script; None when installed (site-packages) or absent."""
+    directory = (directory or MOCK_DIR).resolve()
+    if {"site-packages", "dist-packages"} & set(directory.parts):
+        return None
+    candidate = directory / ".env"
+    return candidate if candidate.is_file() else None
+
+
+def load_mock_dotenv(path: Path) -> tuple[list[str], set[str]]:
+    """Apply MOCK_PROFINET_* settings from the mock's .env; return (keys ignored, keys applied)."""
+    ignored, applied = [], set()
     for name, value in dotenv_values(path).items():
         key = name.strip().upper()
+        if key.startswith("EXPORT "):
+            key = key[7:].strip()
         if value is None or key in os.environ:
             continue
         if not key.startswith("MOCK_PROFINET_"):
             ignored.append(name)
             continue
         os.environ[key] = value
-    return ignored
+        applied.add(key)
+    return ignored, applied
+
+
+def is_loopback(host: str) -> bool:
+    if host.strip().lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip().strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def warn(message: str) -> None:
+    print(f"profinet-mock-server: warning: {message}", file=sys.stderr)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    # Settings may come from a .env file in the working directory (or a parent); only the mock's own.
-    path = find_dotenv(usecwd=True)
-    if path:
-        for name in load_discovered_dotenv(path):
-            print(
-                f"profinet-mock-server: warning: ignoring {name} from {path} (only MOCK_PROFINET_* is read)",
-                file=sys.stderr,
-            )
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # Settings may come from profinet-mock-server/.env next to this script - never from the working
+    # directory - and only MOCK_PROFINET_* keys are taken from it.
+    applied: set[str] = set()
+    path = mock_dotenv()
+    if path is not None:
+        ignored, applied = load_mock_dotenv(path)
+        for name in ignored:
+            warn(f"ignoring {name} from {path} (only MOCK_PROFINET_* is read)")
+    stray = Path.cwd() / ".env"
+    if stray.is_file() and (path is None or stray.resolve() != path.resolve()):
+        warn(f"not reading {stray}: the mock only reads the .env next to its script")
     args = parse_args(argv)
+    host_from_flag = any(arg == "--host" or arg.startswith("--host=") for arg in argv)
+    if "MOCK_PROFINET_HOST" in applied and not host_from_flag and not is_loopback(args.host):
+        raise SystemExit(
+            f"profinet-mock-server: refusing MOCK_PROFINET_HOST={args.host} from {path}: the mock accepts writes "
+            "from anyone who can connect, so a non-loopback address must come from --host or the real environment"
+        )
     config = MockConfig(
         host=args.host,
         port=args.port,

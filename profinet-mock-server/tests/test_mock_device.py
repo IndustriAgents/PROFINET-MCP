@@ -228,18 +228,24 @@ def test_bad_devices_files_are_rejected(spec, fragment: str) -> None:
 # -- configuration is read at run time, after load_dotenv ---------------------------
 
 
-def test_main_reads_settings_from_dotenv(tmp_path, monkeypatch, capsys) -> None:
-    for key in ("MOCK_PROFINET_PORT", "MOCK_PROFINET_UPDATE_INTERVAL", "MOCK_PROFINET_DEVICES_FILE", "LD_PRELOAD"):
-        # set + delete so monkeypatch removes whatever load_dotenv() adds
-        monkeypatch.setenv(key, "placeholder")
+@pytest.fixture
+def mock_env(tmp_path, monkeypatch):
+    """A fake script directory for the mock's .env, a separate working directory, a clean environment."""
+    for key in (
+        "MOCK_PROFINET_PORT",
+        "MOCK_PROFINET_UPDATE_INTERVAL",
+        "MOCK_PROFINET_DEVICES_FILE",
+        "MOCK_PROFINET_HOST",
+        "LD_PRELOAD",
+    ):
+        monkeypatch.setenv(key, "placeholder")  # set + delete so monkeypatch removes whatever main() adds
         monkeypatch.delenv(key)
-    devices = tmp_path / "devices.json"
-    devices.write_text(json.dumps([{"name": "from-env", "mac": "02:00:00:00:00:09", "ip": "10.0.0.9"}]))
-    (tmp_path / ".env").write_text(
-        f"MOCK_PROFINET_PORT=5999\nmock_profinet_update_interval=2.5\nMOCK_PROFINET_DEVICES_FILE={devices}\n"
-        "LD_PRELOAD=/tmp/evil.so\n"
-    )
-    monkeypatch.chdir(tmp_path)
+    script_dir = tmp_path / "profinet-mock-server"
+    script_dir.mkdir()
+    monkeypatch.setattr(mock, "MOCK_DIR", script_dir)
+    cwd = tmp_path / "somewhere" / "else"
+    cwd.mkdir(parents=True)
+    monkeypatch.chdir(cwd)
     seen = {}
 
     async def fake_run_server(config, devices=None, *, exit_on_stdin_eof=False):
@@ -247,12 +253,65 @@ def test_main_reads_settings_from_dotenv(tmp_path, monkeypatch, capsys) -> None:
         seen["devices"] = devices
 
     monkeypatch.setattr(mock, "run_server", fake_run_server)
+    return script_dir, cwd, seen
+
+
+def test_main_reads_settings_from_dotenv(mock_env, capsys) -> None:
+    script_dir, _, seen = mock_env
+    devices = script_dir / "devices.json"
+    devices.write_text(json.dumps([{"name": "from-env", "mac": "02:00:00:00:00:09", "ip": "10.0.0.9"}]))
+    (script_dir / ".env").write_text(
+        f"MOCK_PROFINET_PORT=5999\nmock_profinet_update_interval=2.5\nMOCK_PROFINET_DEVICES_FILE={devices}\n"
+        "LD_PRELOAD=/tmp/evil.so\n"
+    )
     mock.main([])
     assert seen["config"].port == 5999
     assert seen["config"].update_interval == 2.5
     assert [d.name for d in seen["devices"]] == ["from-env"]
-    assert "LD_PRELOAD" not in os.environ  # only MOCK_PROFINET_* is taken from a discovered .env
+    assert "LD_PRELOAD" not in os.environ  # only MOCK_PROFINET_* is taken from the .env
     assert "ignoring LD_PRELOAD" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("where", ["cwd", "parent"])
+def test_dotenv_in_the_working_directory_is_not_read(mock_env, capsys, where: str) -> None:
+    _, cwd, seen = mock_env
+    target = cwd if where == "cwd" else cwd.parent
+    (target / ".env").write_text("MOCK_PROFINET_PORT=5999\nMOCK_PROFINET_HOST=0.0.0.0\n")
+    mock.main([])
+    assert (seen["config"].port, seen["config"].host) == (5600, "127.0.0.1")
+
+
+def test_installed_mock_has_no_implicit_dotenv(tmp_path) -> None:
+    site = tmp_path / "lib" / "python3.11" / "site-packages"
+    site.mkdir(parents=True)
+    (site / ".env").write_text("MOCK_PROFINET_HOST=0.0.0.0\n")
+    assert mock.mock_dotenv(site) is None
+
+
+def test_non_loopback_host_from_dotenv_is_refused(mock_env) -> None:
+    script_dir, _, seen = mock_env
+    (script_dir / ".env").write_text("MOCK_PROFINET_HOST=0.0.0.0\n")
+    with pytest.raises(SystemExit, match="refusing MOCK_PROFINET_HOST=0.0.0.0"):
+        mock.main([])
+    assert "config" not in seen
+
+
+@pytest.mark.parametrize("host", ["127.0.0.2", "localhost", "::1"])
+def test_loopback_host_from_dotenv_is_fine(mock_env, host: str) -> None:
+    script_dir, _, seen = mock_env
+    (script_dir / ".env").write_text(f"MOCK_PROFINET_HOST={host}\n")
+    mock.main([])
+    assert seen["config"].host == host
+
+
+def test_non_loopback_host_from_flag_or_real_environment_is_allowed(mock_env, monkeypatch) -> None:
+    script_dir, _, seen = mock_env
+    (script_dir / ".env").write_text("MOCK_PROFINET_HOST=0.0.0.0\n")
+    mock.main(["--host", "0.0.0.0"])
+    assert seen["config"].host == "0.0.0.0"
+    monkeypatch.setenv("MOCK_PROFINET_HOST", "0.0.0.0")  # the real environment wins over the .env
+    mock.main([])
+    assert seen["config"].host == "0.0.0.0"
 
 
 def test_config_rejects_bad_values() -> None:

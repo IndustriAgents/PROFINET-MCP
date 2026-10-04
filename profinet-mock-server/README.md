@@ -32,9 +32,14 @@ uv run --directory profinet-mock-server profinet-mock-server   # listens on 127.
 | `--verbose` | `MOCK_PROFINET_VERBOSE` | off |
 | `--exit-on-stdin-eof` | – | off: stop when stdin closes (the tests use it so a killed test run leaves no mock behind) |
 
-The environment variables can also come from a `.env` file in the working
-directory (or a parent directory); only `MOCK_PROFINET_*` keys are taken from
-it, anything else is ignored with a warning. Flags win over the environment.
+The environment variables can also come from `profinet-mock-server/.env`,
+next to the mock's script (an installed mock reads no `.env`); a `.env` in the
+working directory or a parent is never read. Only `MOCK_PROFINET_*` keys are
+taken from it, anything else is ignored with a warning. Because the mock
+accepts writes from anyone who can connect, a non-loopback
+`MOCK_PROFINET_HOST` from that file is refused: an address such as `0.0.0.0`
+must come from `--host` or the real environment. Flags win over the
+environment.
 
 ## Simulated devices
 
