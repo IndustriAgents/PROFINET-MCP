@@ -22,7 +22,7 @@ from lxml import etree
 
 GSDML_NAMESPACE = "http://www.profibus.com/GSDML/2003/11/DeviceProfile"
 XSI_NAMESPACE = "http://www.w3.org/2001/XMLSchema-instance"
-MAX_FILE_BYTES = 32 * 1024 * 1024  # the largest real GSDML files are a few MiB
+MAX_FILE_BYTES = 8 * 1024 * 1024  # real GSDML files are a few hundred KiB up to a few MiB
 CACHE_SIZE = 64
 
 #: Byte sizes of GSDML ``DataItem`` data types. Types not listed here (or
@@ -68,51 +68,114 @@ _SCHEMA_VERSION_RE = re.compile(r"GSDML-DeviceProfile-(V\d+\.\d+)\.xsd", re.IGNO
 _FILENAME_VERSION_RE = re.compile(r"^GSDML-(V\d+\.\d+)-", re.IGNORECASE)
 
 
-#: Encodings a GSDML file may declare. All are ASCII-compatible, so the markers below are visible as
-#: plain bytes; UTF-16/32 files are decoded before the check. Anything else (UTF-7, EBCDIC, ...) could
-#: hide a DOCTYPE from a byte search, so it is refused.
-ASCII_COMPATIBLE_ENCODINGS = frozenset(
-    {"utf-8", "utf8", "us-ascii", "ascii"}
-    | {f"iso-8859-{n}" for n in range(1, 17)}
-    | {f"iso8859-{n}" for n in range(1, 17)}
-    | {"latin1", "latin-1"}
-    | {f"windows-{n}" for n in range(1250, 1259)}
-    | {f"cp{n}" for n in range(1250, 1259)}
+#: The only encodings accepted, by the name they may be declared with -> Python codec. The encoding is
+#: decided and the file decoded here, in Python; libxml2 only ever sees the decoded text, without its XML
+#: declaration, so it cannot switch to an encoding (UTF-7, EBCDIC, ...) that hides a DOCTYPE.
+ALLOWED_ENCODINGS = {
+    "utf-8": "utf-8",
+    "utf8": "utf-8",
+    "utf-16": "utf-16",
+    "utf-16le": "utf-16",
+    "utf-16be": "utf-16",
+    "utf-32": "utf-32",
+    "utf-32le": "utf-32",
+    "utf-32be": "utf-32",
+    "iso-8859-1": "iso-8859-1",
+    "iso8859-1": "iso-8859-1",
+    "iso_8859-1": "iso-8859-1",
+    "latin1": "iso-8859-1",
+    "latin-1": "iso-8859-1",
+    "us-ascii": "ascii",
+    "ascii": "ascii",
+}
+ALLOWED_DESCRIPTION = "UTF-8, UTF-16, UTF-32, ISO-8859-1 or US-ASCII"
+_BOMS = (  # UTF-32 before UTF-16: FF FE 00 00 starts with FF FE
+    (b"\xff\xfe\x00\x00", "utf-32-le", "utf-32"),
+    (b"\x00\x00\xfe\xff", "utf-32-be", "utf-32"),
+    (b"\xef\xbb\xbf", "utf-8", "utf-8"),
+    (b"\xff\xfe", "utf-16-le", "utf-16"),
+    (b"\xfe\xff", "utf-16-be", "utf-16"),
 )
-_DECLARED_ENCODING = re.compile(rb"""^\s*<\?xml[^>]*?encoding\s*=\s*["']([A-Za-z0-9._-]+)["']""")
+_UNMARKED = {  # first four bytes of "<?xm" without a BOM
+    b"<\x00\x00\x00": ("utf-32-le", "utf-32"),
+    b"\x00\x00\x00<": ("utf-32-be", "utf-32"),
+    b"<\x00?\x00": ("utf-16-le", "utf-16"),
+    b"\x00<\x00?": ("utf-16-be", "utf-16"),
+}
+_REFUSED_SIGNATURES = {  # encodings libxml2 would auto-detect that are not allowed
+    b"\x4c\x6f\xa7\x94": "EBCDIC",
+    b"\x00\x00\x3c\x00": "UCS-4 in 2143 byte order",
+    b"\x00\x3c\x00\x00": "UCS-4 in 3412 byte order",
+    b"\x00\x00\xff\xfe": "UCS-4 in 2143 byte order",
+    b"\xfe\xff\x00\x00": "UCS-4 in 3412 byte order",
+}
+_ENCODING_ATTRIBUTE = re.compile(r"""\sencoding\s*=\s*(["'])([A-Za-z0-9._:-]+)\1""")
 _FORBIDDEN_MARKERS = ("<!doctype", "<!entity")
 
 
-def check_no_dtd(data: bytes, name: str) -> None:
-    """Refuse any document type declaration or entity declaration before parsing.
+def _declaration_end(text: str, name: str) -> int:
+    """Length of the XML declaration at the start of ``text`` (0 if there is none). No length cap."""
+    if not text.startswith("<?xml") or (len(text) > 5 and not (text[5].isspace() or text[5] == "?")):
+        return 0
+    end = text.find("?>")
+    if end < 0:
+        raise GSDMLError(f"{name} has an unterminated XML declaration")
+    return end + 2
 
-    GSDML never needs a DTD. Refusing it up front blocks XXE and entity-expansion bombs on every
+
+def decode_gsdml(data: bytes, name: str) -> str:
+    """Decide the encoding (BOM or full XML declaration), decode, refuse DTDs; return text to parse.
+
+    The returned text has no BOM and no XML declaration. GSDML never needs a DTD; refusing
+    ``<!DOCTYPE``/``<!ENTITY`` in the decoded text blocks XXE and entity-expansion bombs on every
     libxml2 version, including old ones that always expand internal entities in attribute values.
     """
     head = data[:4]
-    if head[:3] == b"\xef\xbb\xbf":
-        data, head = data[3:], data[3:7]
-    utf32 = head in (b"\x00\x00\x00<", b"<\x00\x00\x00", b"\x00\x00\xfe\xff", b"\xff\xfe\x00\x00")
-    utf16 = not utf32 and (head[:2] in (b"\xfe\xff", b"\xff\xfe") or head in (b"\x00<\x00?", b"<\x00?\x00"))
-    if utf32 or utf16:
-        codec = ("utf-32" if utf32 else "utf-16") + ("-be" if head[:1] == b"\x00" or head[:2] == b"\xfe\xff" else "-le")
+    for signature, label in _REFUSED_SIGNATURES.items():
+        if head == signature:
+            raise GSDMLError(f"{name} is encoded in {label}; GSDML files must be {ALLOWED_DESCRIPTION}")
+    codec, family, skip = None, None, 0
+    for bom, bom_codec, bom_family in _BOMS:
+        if data.startswith(bom):
+            codec, family, skip = bom_codec, bom_family, len(bom)
+            break
+    if codec is None and head in _UNMARKED:
+        codec, family = _UNMARKED[head]
+
+    if codec is not None:  # the bytes decide (BOM or NUL pattern); a declaration must agree
         try:
-            text = data.decode(codec).lstrip("\ufeff").lower()
+            text = data[skip:].decode(codec)
         except UnicodeDecodeError:
             raise GSDMLError(f"{name} is not valid {codec.upper()}") from None
-        found = [marker for marker in _FORBIDDEN_MARKERS if marker in text]
-    else:
-        declared = _DECLARED_ENCODING.match(data[:1024])
-        encoding = declared.group(1).decode("ascii").lower() if declared else "utf-8"
-        if encoding not in ASCII_COMPATIBLE_ENCODINGS:
-            raise GSDMLError(f"{name} declares encoding {encoding!r}, which is not supported for GSDML files")
-        lowered = data.lower()
-        found = [marker for marker in _FORBIDDEN_MARKERS if marker.encode("ascii") in lowered]
+        end = _declaration_end(text, name)
+        declared = _ENCODING_ATTRIBUTE.search(text[:end])
+        if declared and ALLOWED_ENCODINGS.get(declared.group(2).lower()) != family:
+            raise GSDMLError(
+                f"{name} is {codec.upper()} but declares encoding {declared.group(2)!r}; GSDML files must be "
+                f"{ALLOWED_DESCRIPTION}"
+            )
+    else:  # 8-bit: the full XML declaration decides (default UTF-8)
+        probe = data.decode("iso-8859-1")  # lossless; only used to read the declaration
+        end = _declaration_end(probe, name)
+        declared = _ENCODING_ATTRIBUTE.search(probe[:end])
+        label = declared.group(2).lower() if declared else "utf-8"
+        codec = ALLOWED_ENCODINGS.get(label)
+        if codec is None or codec in ("utf-16", "utf-32"):
+            raise GSDMLError(f"{name} declares encoding {label!r}; GSDML files must be {ALLOWED_DESCRIPTION}")
+        try:
+            text = data.decode(codec)
+        except UnicodeDecodeError:
+            raise GSDMLError(f"{name} is not valid {codec.upper()}") from None
+        end = _declaration_end(text, name)
+
+    lowered = text.lower()
+    found = [marker for marker in _FORBIDDEN_MARKERS if marker in lowered]
     if found:
         raise GSDMLError(
             f"{name} contains {found[0].upper()}: GSDML files never need a DTD or entity declarations, and they "
             "are refused because they can read local files or expand into gigabytes"
         )
+    return text[end:]
 
 
 def _xml_parser() -> etree.XMLParser:
@@ -216,9 +279,12 @@ class GSDParser:
         data = path.read_bytes()
         if len(data) > MAX_FILE_BYTES:  # it grew between stat() and read
             raise GSDMLError(f"{path} is larger than {MAX_FILE_BYTES // (1024 * 1024)} MiB")
-        check_no_dtd(data, path.name)
+        text = decode_gsdml(data, path.name)
         try:
-            root = etree.fromstring(data, _xml_parser(), base_url=str(path))
+            # A str without an XML declaration: libxml2 is given the characters, never an encoding to pick.
+            root = etree.fromstring(text, _xml_parser(), base_url=str(path))
+        except ValueError as exc:  # e.g. a stray encoding declaration that is not at the start
+            raise GSDMLError(f"{path.name} cannot be parsed: {exc}") from exc
         except etree.XMLSyntaxError as exc:
             raise GSDMLError(f"{path.name} is not well-formed XML: {exc}") from exc
         namespace = etree.QName(root).namespace

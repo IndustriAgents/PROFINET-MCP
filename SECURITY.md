@@ -53,10 +53,17 @@ application on the office network.
 - **A disconnected client sends nothing more.** When the MCP client goes away
   (stdin closes), changes that are still connecting or waiting to retry are
   cancelled before they are sent, and no new request starts.
-- **GSDML files are untrusted input.** `load_gsd_file` refuses any `DOCTYPE`
-  or `ENTITY` declaration before parsing (blocking XXE and entity-expansion
-  bombs on every libxml2 version), unusual encodings and files over 32 MiB,
-  and parses with entity expansion, DTD loading and network access off.
+- **GSDML files are untrusted input.** `load_gsd_file` decides the encoding
+  itself, from the byte-order mark or the complete XML declaration, and
+  accepts only UTF-8, UTF-16, UTF-32, ISO-8859-1 and US-ASCII; encodings that
+  could hide markup from that check (UTF-7, EBCDIC, unusual UCS-4 byte
+  orders) are refused. It decodes the file, refuses any `DOCTYPE` or `ENTITY`
+  declaration in the decoded text (blocking XXE and entity-expansion bombs on
+  every libxml2 version), and hands libxml2 only the decoded text without its
+  XML declaration, so libxml2 cannot switch encodings. Files over 8 MiB are
+  refused, and the parser runs with entity expansion, DTD loading and network
+  access off. Parsing holds the Python GIL, so these input limits - not a
+  timeout - are what keep a parse short (an 8 MiB file takes about a second).
 - **Do not expose the server beyond the host running the client.** It is a
   stdio process meant to run next to the MCP client, not a network service.
 - **Limit what the server's account can reach.** Real DCP and I/O traffic is

@@ -37,8 +37,6 @@ from .pn_client import (
 
 log = logging.getLogger(__name__)
 
-GSD_PARSE_DEADLINE_S = 30.0
-
 Envelope = dict[str, Any]
 
 # -- parameter types (the descriptions and limits end up in each tool's input schema) --
@@ -453,13 +451,10 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         """
         meta: dict[str, Any] = {"source": "gsdml_file", "filepath": filepath}
         try:
-            # In a worker thread, under a deadline, so a large file cannot stall the server (rule 12).
-            with anyio.fail_after(GSD_PARSE_DEADLINE_S):
-                entry, cached = await anyio.to_thread.run_sync(
-                    resources.gsd_parser.load_cached, filepath, abandon_on_cancel=True
-                )
-        except TimeoutError:
-            return err("load_gsd_file", f"Parsing {filepath} took longer than {GSD_PARSE_DEADLINE_S:g} s", meta)
+            # In a worker thread so the Python part of the work interleaves with other requests. lxml holds
+            # the GIL while it parses, so what keeps this short is the input limits (8 MiB, no DTD), not a
+            # timeout: an 8 MiB file parses in well under a second.
+            entry, cached = await anyio.to_thread.run_sync(resources.gsd_parser.load_cached, filepath)
         except FileNotFoundError as exc:
             return err("load_gsd_file", str(exc), meta)
         except GSDMLError as exc:

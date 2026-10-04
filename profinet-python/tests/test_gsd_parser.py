@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.server
 import os
+import re
 import shutil
 import threading
 import time
@@ -270,6 +271,116 @@ def test_encodings_that_could_hide_a_doctype_are_refused(tmp_path, content: byte
         GSDParser().load(path)
 
 
+PAD = " " * 1100  # pushes the encoding attribute past the first 1024 bytes
+
+
+def utf7_bomb() -> bytes:
+    """Review 3: a padded declaration with encoding="UTF-7"; the markers exist only after UTF-7 decoding."""
+    body = FIXTURE_TEXT[FIXTURE_TEXT.index("?>") + 2 :]
+    body = body.replace("<ISO15745Profile ", QUADRATIC + "\n<ISO15745Profile ", 1)
+    body = body.replace('Value="IndustriAgents Test Fixtures"', 'Value="' + "&x;" * 2000 + '"', 1)
+    encoded = body.encode("utf-7").replace(b"<!DOCTYPE", b"+ADwAIQ-DOCTYPE").replace(b"<!ENTITY", b"+ADwAIQ-ENTITY")
+    assert b"<!DOCTYPE" not in encoded
+    return f'<?xml version="1.0"{PAD}encoding="UTF-7"?>'.encode("ascii") + encoded
+
+
+def ebcdic_bomb() -> bytes:
+    """Review 3: IBM037 (EBCDIC) with a quadratic attribute bomb; 97 s and 422 MB at lxml 4.9.2 before."""
+    text = FIXTURE_TEXT.replace('encoding="iso-8859-1"', 'encoding="IBM037"', 1)
+    text = text.replace("<ISO15745Profile ", QUADRATIC + "\n<ISO15745Profile ", 1)
+    text = text.replace('Value="IndustriAgents Test Fixtures"', 'Value="' + "&x;" * 2000 + '"', 1)
+    return text.encode("cp037")
+
+
+@pytest.mark.parametrize(
+    ("make", "fragment"),
+    [
+        (utf7_bomb, "declares encoding 'utf-7'"),
+        (ebcdic_bomb, "is encoded in EBCDIC"),
+        (
+            lambda: f'<?xml version="1.0"{PAD}encoding="windows-1252"?><ISO15745Profile/>'.encode("ascii"),
+            "declares encoding 'windows-1252'",
+        ),
+        (
+            lambda: FIXTURE_TEXT.replace('encoding="iso-8859-1"', 'encoding="ISO-8859-1"').encode("utf-16"),
+            "is UTF-16-LE but declares encoding 'ISO-8859-1'",
+        ),
+        (
+            lambda: '<?xml version="1.0" encoding="UTF-16"?><ISO15745Profile/>'.encode("ascii"),
+            "declares encoding 'utf-16'",
+        ),
+        (lambda: b"\x00\x00<\x00" + b"\x00\x00?\x00" * 4, "UCS-4 in 2143 byte order"),
+        (lambda: b"\x00<\x00\x00" + b"\x00?\x00\x00" * 4, "UCS-4 in 3412 byte order"),
+        (lambda: b'<?xml version="1.0" encoding="UTF-8"?><a>\xff</a>', "is not valid UTF-8"),
+        (lambda: f'<?xml version="1.0"{PAD}encoding="UTF-8"'.encode("ascii"), "unterminated XML declaration"),
+    ],
+    ids=[
+        "padded-utf7-bomb",
+        "ebcdic-bomb",
+        "padded-windows-1252",
+        "utf16-declares-latin1",
+        "ascii-declares-utf16",
+        "ucs4-2143",
+        "ucs4-3412",
+        "invalid-utf8",
+        "unterminated-declaration",
+    ],
+)
+def test_encoding_is_decided_in_python_from_an_allow_list(tmp_path, make, fragment: str) -> None:
+    path = tmp_path / "GSDML-V2.35-x.xml"
+    path.write_bytes(make())
+    started = time.perf_counter()
+    with pytest.raises(GSDMLError, match=re.escape(fragment)):
+        GSDParser().load(path)
+    assert time.perf_counter() - started < 2
+
+
+@pytest.mark.parametrize(
+    "declaration",
+    [
+        f'<?xml version="1.0"{PAD}encoding="iso-8859-1"?>',
+        f"<?xml version='1.0'{PAD}encoding='ISO-8859-1'?>",
+        '<?xml version="1.0" encoding="us-ascii"?>',
+        '<?xml version="1.0"?>',
+        "",
+    ],
+    ids=["padded-latin1", "padded-latin1-single-quotes", "ascii", "no-encoding", "no-declaration"],
+)
+def test_allowed_declarations_parse_without_a_length_limit(tmp_path, declaration: str) -> None:
+    body = FIXTURE_TEXT[FIXTURE_TEXT.index("?>") + 2 :]
+    encoding = "ascii" if "ascii" in declaration else "latin-1" if "8859" in declaration.lower() else "utf-8"
+    if encoding == "ascii":
+        body = body.replace("ä", "ae")  # the German texts
+    path = tmp_path / "GSDML-V2.35-declared.xml"
+    path.write_bytes((declaration + body).encode(encoding))
+    entry = GSDParser().load(path)
+    assert entry.metadata["vendor_id"] == "0x0F00" and len(entry.modules) == 5
+
+
+@pytest.mark.parametrize("codec", ["utf-32", "utf-32-le", "utf-32-be"])
+def test_utf32_gsdml_parses(tmp_path, codec: str) -> None:
+    text = FIXTURE_TEXT.replace('encoding="iso-8859-1"', 'encoding="UTF-32"')
+    path = tmp_path / f"GSDML-V2.35-{codec}.xml"
+    path.write_bytes(text.encode(codec))
+    assert len(GSDParser().load(path).modules) == 5
+
+
+def test_a_file_near_the_size_cap_parses_quickly(tmp_path) -> None:
+    """Without DTDs the input limits bound the parse: ~8 MiB parses in a couple of seconds at most."""
+    filler = "<!-- " + "x" * 1000 + " -->\n"
+    body = FIXTURE_TEXT.replace("</ProfileBody>", filler * 7800 + "</ProfileBody>", 1)
+    data = body.encode("latin-1")
+    assert gsd_parser.MAX_FILE_BYTES - 1_000_000 < len(data) < gsd_parser.MAX_FILE_BYTES
+    path = tmp_path / "GSDML-V2.35-big.xml"
+    path.write_bytes(data)
+    started = time.perf_counter()
+    assert len(GSDParser().load(path).modules) == 5
+    assert time.perf_counter() - started < 5
+    path.write_bytes(data + b" " * (gsd_parser.MAX_FILE_BYTES - len(data) + 1))
+    with pytest.raises(GSDMLError, match="larger than 8 MiB"):
+        GSDParser().load(path)
+
+
 @pytest.mark.parametrize("codec", ["utf-16", "utf-16-le", "utf-16-be", "utf-8-sig"])
 def test_unicode_encoded_gsdml_still_parses(tmp_path, codec: str) -> None:
     label = "UTF-8" if codec == "utf-8-sig" else "UTF-16"
@@ -372,3 +483,23 @@ def test_base_path_lookup(tmp_path) -> None:
     assert entry.path == (tmp_path / SAMPLE_GSDML.name).resolve()
     with pytest.raises(FileNotFoundError):
         GSDParser(tmp_path).load_cached("GSDML-missing.xml")
+
+
+def test_libxml2_only_sees_decoded_text_without_a_declaration(tmp_path, monkeypatch) -> None:
+    """Decision (b): libxml2 never gets bytes or an encoding declaration, so it cannot pick an encoding."""
+    seen = []
+    real_fromstring = etree.fromstring
+
+    def recording_fromstring(text, *args, **kwargs):
+        seen.append(text)
+        return real_fromstring(text, *args, **kwargs)
+
+    monkeypatch.setattr(gsd_parser.etree, "fromstring", recording_fromstring)
+    for codec, label in (("latin-1", "iso-8859-1"), ("utf-16", "UTF-16"), ("utf-8", "UTF-8")):
+        path = tmp_path / f"GSDML-{codec}.xml"
+        path.write_bytes(FIXTURE_TEXT.replace('encoding="iso-8859-1"', f'encoding="{label}"').encode(codec))
+        GSDParser().load(path)
+    assert len(seen) == 3
+    for text in seen:
+        assert isinstance(text, str) and not text.lstrip().startswith("<?xml")
+        assert "Gerät" in text  # decoded correctly, whatever the file's encoding

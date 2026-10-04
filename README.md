@@ -82,10 +82,12 @@ The server is **read-only by default**:
   come sooner are refused (`meta.retry_after_s`); `get_device_info` and
   `test_device_communication` reuse the last answer instead
   (`meta.cached: true`, `meta.age_s`).
-- `load_gsd_file` refuses files that contain a `DOCTYPE` or `ENTITY`
-  declaration (GSDML never needs one; they enable XXE and entity bombs),
-  files in encodings other than UTF-8/16/32, ASCII, ISO-8859-x and
-  windows-125x, and files over 32 MiB.
+- `load_gsd_file` accepts only files encoded in UTF-8, UTF-16, UTF-32,
+  ISO-8859-1 or US-ASCII (decided from the byte-order mark or the XML
+  declaration), up to 8 MiB, and refuses any `DOCTYPE` or `ENTITY`
+  declaration (GSDML never needs one; they enable XXE and entity bombs).
+  Other encodings, including windows-1252, are refused: convert such a file
+  to UTF-8 first.
 - `PROFINET_CONTROLLER_IP`, `PROFINET_NETWORK` and `PROFINET_DCP_PORT` are
   reported by `ping` and `get_connection_status` but not used for anything.
 - No alarms, diagnostics, record data, topology (LLDP) or PROFINET security
