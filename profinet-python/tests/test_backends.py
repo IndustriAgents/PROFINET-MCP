@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 import anyio
 import pytest
@@ -12,12 +13,14 @@ from test_dcp import XID, FakeTransport, identify_response
 
 from profinet_mcp import dcp
 from profinet_mcp.backends import (
+    DeviceRejected,
     MockBackend,
     NetworkBackend,
     OperationNotImplemented,
     OutcomeUnknown,
     ProfinetClientError,
     RateLimited,
+    RequestNotSent,
     UnconfiguredBackend,
     create_backend,
 )
@@ -129,11 +132,22 @@ async def test_unconfirmed_write_is_not_reported_as_success() -> None:
             tg.cancel_scope.cancel()
 
 
+#: Replies a fake mock can give after it has (notionally) applied a change.
+BAD_REPLIES = {
+    "garbage": b"not json\n",
+    "no-success-flag": b'{"data": 1}\n',
+    "internal-error": b'{"success": false, "error": "Internal mock error: disk full"}\n',
+    "wrong-confirmation": b'{"success": true, "data": {"mac_address": "02:00:00:00:00:01", "written_bytes": 999}}\n',
+    "trickle-no-newline": None,  # sends bytes forever without ever finishing the line
+}
+
+
 class DroppingMock:
-    """A fake mock that applies every request it receives, then never answers (or hangs up)."""
+    """A fake mock that applies every request it receives, then never answers properly."""
 
     def __init__(self, mode: str, answer_after: int | None = None) -> None:
-        self.mode = mode  # "hang-up" closes the connection, "silent" keeps it open without replying
+        # "hang-up" closes the connection, "silent" stays open without replying, BAD_REPLIES keys reply badly
+        self.mode = mode
         self.received: list[dict] = []
         self.answer_after = answer_after  # answer normally once this many requests were dropped
 
@@ -147,6 +161,15 @@ class DroppingMock:
                 return
             if self.mode == "silent":
                 await anyio.sleep(30)
+            elif self.mode == "trickle-no-newline":
+                try:
+                    for _ in range(600):
+                        await stream.send(b"x")
+                        await anyio.sleep(0.05)
+                except (anyio.BrokenResourceError, anyio.ClosedResourceError):
+                    pass  # the client gave up, as it should
+            elif self.mode in BAD_REPLIES:
+                await stream.send(BAD_REPLIES[self.mode])
 
 
 async def serve(fake: DroppingMock, task_group) -> int:
@@ -177,6 +200,64 @@ async def test_changes_are_never_sent_twice(mode: str, op: str, operation) -> No
         finally:
             tg.cancel_scope.cancel()
     assert [r["op"] for r in fake.received] == [op]
+
+
+@pytest.mark.parametrize("mode", list(BAD_REPLIES))
+@pytest.mark.parametrize(("op", "operation"), CHANGES, ids=[op for op, _ in CHANGES])
+async def test_bad_replies_to_changes_are_unknown_not_rejected(mode: str, op: str, operation) -> None:
+    """Rule 1a: after the send, only an explicit refusal is "rejected"; anything else may have been applied."""
+    fake = DroppingMock(mode)
+    async with anyio.create_task_group() as tg:
+        port = await serve(fake, tg)
+        backend = MockBackend("127.0.0.1", port, timeout=0.5, max_retries=3, backoff_base=0.01)
+        try:
+            with anyio.fail_after(10):
+                with pytest.raises(OutcomeUnknown, match="may have been applied; check before retrying"):
+                    await operation(backend)
+        finally:
+            tg.cancel_scope.cancel()
+    assert [r["op"] for r in fake.received] == [op]
+
+
+@pytest.mark.parametrize(("op", "operation"), CHANGES, ids=[op for op, _ in CHANGES])
+async def test_explicit_refusal_is_rejected(op: str, operation) -> None:
+    async def refuse(stream) -> None:
+        async with stream:
+            await stream.receive()
+            await stream.send(b'{"success": false, "error": "No device with MAC", "rejected": true}\n')
+
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    port = listener.extra(SocketAttribute.local_port)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(listener.serve, refuse)
+        try:
+            with pytest.raises(DeviceRejected, match="No device with MAC"):
+                await operation(MockBackend("127.0.0.1", port, timeout=1, max_retries=0))
+        finally:
+            tg.cancel_scope.cancel()
+
+
+async def test_trickling_peer_cannot_hang_a_read() -> None:
+    """Rule 12: a peer that answers garbage forever gives a clean error, within the deadline."""
+    fake = DroppingMock("trickle-no-newline")
+    async with anyio.create_task_group() as tg:
+        port = await serve(fake, tg)
+        backend = MockBackend("127.0.0.1", port, timeout=0.5, max_retries=1, backoff_base=0.01)
+        started = time.monotonic()
+        try:
+            with anyio.fail_after(10):
+                with pytest.raises(ProfinetClientError, match="did not answer 'read'") as raised:
+                    await backend.read_io("x", 1, 1, 2)
+        finally:
+            tg.cancel_scope.cancel()
+    assert not isinstance(raised.value, OutcomeUnknown)
+    assert time.monotonic() - started < backend.deadline()
+
+
+async def test_request_that_cannot_be_encoded_is_not_sent() -> None:
+    backend = MockBackend("127.0.0.1", 1, timeout=1, max_retries=0)
+    with pytest.raises(RequestNotSent, match="Could not encode"):
+        await backend.call({"op": "write", "data": [float("nan")]}, changes_device=True)
 
 
 async def test_reads_are_retried_when_the_reply_is_lost() -> None:
@@ -272,3 +353,23 @@ async def test_create_backend_follows_config() -> None:
     assert isinstance(create_backend(ProfinetConfig()), UnconfiguredBackend)
     assert isinstance(create_backend(ProfinetConfig(backend="mock")), MockBackend)
     assert isinstance(create_backend(ProfinetConfig(backend="network")), NetworkBackend)
+
+
+async def test_device_lookups_reuse_a_fresh_discovery(monkeypatch) -> None:
+    """Minor 5: discover then get_device_info must work within the 2 s interval, from the cached answer."""
+    now = [50.0]
+    transport = FakeTransport([identify_response(xid=XID)])
+    monkeypatch.setattr(dcp.random, "getrandbits", lambda bits: XID)
+    backend = NetworkBackend("fake0", transport=transport, clock=lambda: now[0])
+    devices, meta = await backend.discover(0.5)
+    assert meta["cached"] is False and len(transport.sent) == 1
+    now[0] += 0.7
+    cached, meta = await backend.discover(0.5, allow_cached=True)
+    assert cached == devices
+    assert meta["cached"] is True and meta["age_s"] == pytest.approx(0.7)
+    assert len(transport.sent) == 1  # nothing new went out
+    with pytest.raises(RateLimited):  # an explicit fresh discovery is still refused
+        await backend.discover(0.5)
+    now[0] += 1.5
+    _, meta = await backend.discover(0.5, allow_cached=True)  # older than the interval: fresh request
+    assert meta["cached"] is False and len(transport.sent) == 2

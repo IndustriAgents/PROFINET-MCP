@@ -15,6 +15,7 @@ from profinet_mcp.backends import MockBackend, NetworkBackend
 from profinet_mcp.config import ProfinetConfig
 from profinet_mcp.pn_client import ProfinetClient
 from profinet_mcp.server import ProfinetMCPServer
+from profinet_mcp.tools import CHANGE_TOOLS
 
 pytestmark = pytest.mark.anyio
 
@@ -52,7 +53,10 @@ class RecordingBackend:
         if self.fail is not None:
             raise self.fail
 
-    async def discover(self, timeout):
+    def deadline(self, timeout=None) -> float:
+        return 5.0
+
+    async def discover(self, timeout, *, allow_cached=False):
         await self._call("discover", timeout)
         return [dict(DEVICE)], {"backend": self.name}
 
@@ -108,9 +112,12 @@ async def test_every_tool_has_a_description_and_schema() -> None:
         assert tool.annotations is not None, tool.name
         for name, schema in tool.inputSchema.get("properties", {}).items():
             assert schema.get("description"), f"{tool.name}.{name} has no description"
-    by_name = {tool.name: tool for tool in tools}
-    assert by_name["write_io_data"].annotations.destructiveHint is True
-    assert by_name["read_io_data"].annotations.readOnlyHint is True
+    for tool in tools:  # rule 13: nothing that changes a device invites retries
+        hints = tool.annotations
+        if tool.name in CHANGE_TOOLS:
+            assert (hints.readOnlyHint, hints.destructiveHint, hints.idempotentHint) == (False, True, False), tool.name
+        else:
+            assert hints.readOnlyHint is True, tool.name
 
 
 # -- argument validation comes back as an envelope ----------------------------------------
@@ -568,3 +575,105 @@ async def test_outcome_is_not_sent_when_nothing_went_out() -> None:
     nothing = ProfinetMCPServer(ProfinetConfig(writes_enabled=True))
     result = await call(nothing, "write_io_data", device_name="x", slot=1, subslot=2, data=[1])
     assert (result["meta"]["outcome"], result["meta"]["request_sent"]) == ("not_sent", False)
+
+
+@pytest.mark.parametrize(
+    ("reply", "outcome"),
+    [
+        (b"not json\n", "unknown"),
+        (b'{"data": 1}\n', "unknown"),
+        (b'{"success": false, "error": "Internal mock error: boom"}\n', "unknown"),
+        (b'{"success": false, "error": "Slot 1/subslot 2 not found", "rejected": true}\n', "rejected"),
+    ],
+    ids=["garbage", "no-success-flag", "internal-error", "explicit-refusal"],
+)
+@pytest.mark.parametrize(
+    ("tool", "arguments"),
+    [
+        ("write_io_data", {"device_name": "pn-device-01", "slot": 1, "subslot": 2, "data": [1]}),
+        ("set_device_name", {"device_mac": MAC, "name": "renamed"}),
+        ("set_device_ip", {"device_mac": MAC, "ip_address": "10.0.0.2", "subnet_mask": "255.0.0.0"}),
+        ("identify_device", {"device_mac": MAC}),
+    ],
+)
+async def test_reply_classification_for_changes(tool: str, arguments: dict, reply: bytes, outcome: str) -> None:
+    received: list[dict] = []
+
+    async def answer(stream) -> None:
+        async with stream:
+            received.append(json.loads(await stream.receive()))
+            await stream.send(reply)
+
+    listener = await anyio.create_tcp_listener(local_host="127.0.0.1", local_port=0)
+    config = ProfinetConfig(
+        backend="mock",
+        mock_port=listener.extra(SocketAttribute.local_port),
+        max_retries=3,
+        retry_backoff_base=0.01,
+        timeout=1,
+        writes_enabled=True,
+        config_cmds_enabled=True,
+    )
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(listener.serve, answer)
+        try:
+            result = await call(ProfinetMCPServer(config), tool, **arguments)
+        finally:
+            tg.cancel_scope.cancel()
+    assert result["success"] is False
+    assert (result["meta"]["outcome"], result["meta"]["request_sent"]) == (outcome, True)
+    if outcome == "unknown":
+        assert "may have been applied; check before retrying" in result["error"]
+    assert len(received) == 1
+
+
+class HangingBackend(RecordingBackend):
+    """Never answers: the client's overall deadline must end every call (rule 12)."""
+
+    def deadline(self, timeout=None) -> float:
+        return 0.3
+
+    async def _call(self, op: str, *args: Any) -> None:
+        self.calls.append((op, args))
+        await anyio.sleep(30)
+
+
+async def test_overall_deadline_ends_a_hung_call() -> None:
+    server, backend = make_server(HangingBackend(), writes_enabled=True, config_cmds_enabled=True)
+    with anyio.fail_after(10):
+        wrote = await call(server, "write_io_data", device_name="x", slot=1, subslot=2, data=[1])
+        read = await call(server, "read_io_data", device_name="x", slot=1, subslot=1, data_length=1)
+        named = await call(server, "set_device_name", device_mac=MAC, name="late")
+    assert wrote["success"] is False and (wrote["meta"]["outcome"], wrote["meta"]["request_sent"]) == ("unknown", True)
+    assert "may have been applied" in wrote["error"]
+    assert named["meta"]["outcome"] == "unknown"
+    assert read["success"] is False and "deadline" in read["error"] and "outcome" not in read["meta"]
+
+
+async def test_local_failure_before_sending_is_not_sent() -> None:
+    from profinet_mcp.backends import RequestNotSent
+
+    server, _ = make_server(
+        RecordingBackend(fail=RequestNotSent("Could not encode the 'write' request")), writes_enabled=True
+    )
+    result = await call(server, "write_io_data", device_name="x", slot=1, subslot=2, data=[1])
+    assert (result["meta"]["outcome"], result["meta"]["request_sent"]) == ("not_sent", False)
+
+
+async def test_lookups_after_discovery_use_the_cached_answer(monkeypatch) -> None:
+    from test_dcp import XID, identify_response
+
+    from profinet_mcp import dcp
+
+    monkeypatch.setattr(dcp.random, "getrandbits", lambda bits: XID)
+    transport = FakeTransport([identify_response(xid=XID)])
+    server, _ = make_server(NetworkBackend("fake0", transport=transport))
+    found = await call(server, "discover_devices", timeout=0.5)
+    assert found["success"] is True and found["meta"]["cached"] is False
+    info = await call(server, "get_device_info", device_name="line1-io")
+    assert info["success"] is True and info["meta"]["cached"] is True and info["meta"]["age_s"] >= 0
+    reach = await call(server, "test_device_communication", device_name="line1-io")
+    assert reach["success"] is True and reach["meta"]["cached"] is True
+    assert len(transport.sent) == 1
+    again = await call(server, "discover_devices", timeout=0.5)
+    assert again["success"] is False and again["meta"]["refused"] is True

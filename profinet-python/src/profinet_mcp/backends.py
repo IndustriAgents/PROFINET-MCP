@@ -12,6 +12,7 @@ Every backend answers with ``(result, meta)``; ``meta["backend"]`` names it.
 
 from __future__ import annotations
 
+import copy
 import json
 import time
 from collections.abc import Callable
@@ -63,12 +64,16 @@ class RateLimited(OperationRefused):
         self.retry_after = retry_after
 
 
-class BackendUnavailable(ProfinetClientError):
+class RequestNotSent(ProfinetClientError):
+    """The request failed before anything was sent (outcome ``not_sent``)."""
+
+
+class BackendUnavailable(RequestNotSent):
     """The backend could not be reached, so the request was never sent."""
 
 
 class DeviceRejected(ProfinetClientError):
-    """The device received the request and refused it (nothing was changed)."""
+    """The device refused the request in a way that guarantees nothing was changed."""
 
 
 class OutcomeUnknown(ProfinetClientError):
@@ -84,7 +89,10 @@ Meta = dict[str, Any]
 class Backend(Protocol):
     name: str
 
-    async def discover(self, timeout: float) -> tuple[list[dict[str, Any]], Meta]: ...
+    def deadline(self, timeout: float | None = None) -> float:
+        """Overall seconds one request may take, retries included (suite rule 12)."""
+
+    async def discover(self, timeout: float, *, allow_cached: bool = False) -> tuple[list[dict[str, Any]], Meta]: ...
 
     async def read_io(self, device: str, slot: int, subslot: int, length: int) -> tuple[bytes, Meta]: ...
 
@@ -132,7 +140,10 @@ class UnconfiguredBackend:
     def _refuse(self) -> Any:
         raise BackendNotConfigured(NO_BACKEND)
 
-    async def discover(self, timeout: float) -> tuple[list[dict[str, Any]], Meta]:
+    def deadline(self, timeout: float | None = None) -> float:
+        return 5.0
+
+    async def discover(self, timeout: float, *, allow_cached: bool = False) -> tuple[list[dict[str, Any]], Meta]:
         return self._refuse()
 
     async def read_io(self, device: str, slot: int, subslot: int, length: int) -> tuple[bytes, Meta]:
@@ -186,6 +197,12 @@ class MockBackend:
     def _meta(self, op: str) -> Meta:
         return {"backend": self.name, "mock_endpoint": self.endpoint, "mock_op": op}
 
+    def deadline(self, timeout: float | None = None) -> float:
+        """Worst case of :meth:`call`: every attempt connects and waits for a reply, plus backoff."""
+        attempts = self.max_retries + 1
+        backoff = sum(self.backoff_base * (2**attempt) for attempt in range(self.max_retries))
+        return attempts * (self.timeout + (timeout or self.timeout)) + backoff + 2.0
+
     async def _connect(self) -> Any:
         last: BaseException | None = None
         attempts = self.max_retries + 1
@@ -211,7 +228,10 @@ class MockBackend:
         never is: the device may already have applied it, so the caller gets :class:`OutcomeUnknown`.
         """
         op = request["op"]
-        payload = json.dumps(request).encode("utf-8") + b"\n"
+        try:
+            payload = json.dumps(request, allow_nan=False).encode("utf-8") + b"\n"
+        except (TypeError, ValueError) as exc:  # built locally; nothing has been sent
+            raise RequestNotSent(f"Could not encode the {op!r} request: {exc}") from exc
         attempts = 1 if changes_device else self.max_retries + 1
         for attempt in range(attempts):
             stream = await self._connect()  # nothing has been sent yet, so this may retry
@@ -244,7 +264,12 @@ class MockBackend:
                 raise self._unknown(op, problem)
             raise ProfinetClientError(f"The mock answered {op!r} badly: {problem}")
         if not response["success"]:
-            raise DeviceRejected(f"Mock IO device: {response.get('error') or 'request failed'}")
+            error = response.get("error") or "request failed"
+            if response.get("rejected") is True:  # refused before any change, by the mock's contract
+                raise DeviceRejected(f"Mock IO device: {error}")
+            if changes_device:
+                raise self._unknown(op, f"it reported a failure without confirming that nothing changed: {error}")
+            raise ProfinetClientError(f"Mock IO device: {error}")
         return response.get("data")
 
     def _unknown(self, op: str, problem: str) -> OutcomeUnknown:
@@ -264,7 +289,7 @@ class MockBackend:
             record["identifying"] = raw["identifying"]
         return record
 
-    async def discover(self, timeout: float) -> tuple[list[dict[str, Any]], Meta]:
+    async def discover(self, timeout: float, *, allow_cached: bool = False) -> tuple[list[dict[str, Any]], Meta]:
         data = await self.call({"op": "discover"}, timeout=timeout, changes_device=False)
         if not isinstance(data, list):
             raise ProfinetClientError("The mock's discover answer is not a list")
@@ -363,12 +388,19 @@ class NetworkBackend:
         *,
         min_interval: float = MIN_IDENTIFY_INTERVAL_S,
         clock: Callable[[], float] = time.monotonic,
+        slack: float = 5.0,
     ) -> None:
         self.interface = interface
         self.transport = transport if transport is not None else dcp.ScapyL2Transport(interface)
         self.min_interval = min_interval
+        self.slack = slack
         self._clock = clock
         self._last_identify: float | None = None
+        # (send time, completion time, devices, info) of the last finished Identify All
+        self._last_result: tuple[float, float, list[dict[str, Any]], dict[str, Any]] | None = None
+
+    def deadline(self, timeout: float | None = None) -> float:
+        return (timeout or 0.0) + dcp.SNIFFER_START_TIMEOUT + self.slack
 
     def describe(self) -> dict[str, Any]:
         return {"backend": self.name, "interface": self.interface}
@@ -376,10 +408,16 @@ class NetworkBackend:
     def _meta(self) -> Meta:
         return {"backend": self.name, "interface": self.interface}
 
-    async def discover(self, timeout: float) -> tuple[list[dict[str, Any]], Meta]:
+    async def discover(self, timeout: float, *, allow_cached: bool = False) -> tuple[list[dict[str, Any]], Meta]:
+        """DCP Identify All. ``allow_cached`` (device lookups) may reuse the last answer within the interval."""
         now = self._clock()
         previous = self._last_identify
         if previous is not None and now - previous < self.min_interval:
+            cached = self._last_result
+            if allow_cached and cached is not None and cached[0] == previous:
+                _, finished, devices, info = cached
+                meta = {**self._meta(), **info, "cached": True, "age_s": round(max(now - finished, 0.0), 3)}
+                return copy.deepcopy(devices), meta
             wait = self.min_interval - (now - previous)
             raise RateLimited(
                 f"DCP Identify All was sent {now - previous:.1f} s ago; discovery is limited to one request every "
@@ -390,14 +428,16 @@ class NetworkBackend:
         # Claimed before the (threaded) exchange, so concurrent calls are refused too.
         self._last_identify = now
         try:
-            devices, info = await anyio.to_thread.run_sync(dcp.identify_all, self.transport, timeout)
+            # abandon_on_cancel: the client's overall deadline can end the call even if capture hangs.
+            devices, info = await anyio.to_thread.run_sync(
+                dcp.identify_all, self.transport, timeout, abandon_on_cancel=True
+            )
         except dcp.DcpError as exc:
             self._last_identify = previous  # the request did not go out (or the capture failed)
             raise ProfinetClientError(str(exc)) from exc
-        meta = self._meta()
-        meta.update(info)
-        meta["timeout_s"] = timeout
-        return devices, meta
+        info = {**info, "timeout_s": timeout}
+        self._last_result = (now, self._clock(), copy.deepcopy(devices), info)
+        return devices, {**self._meta(), **info, "cached": False}
 
     async def read_io(self, device: str, slot: int, subslot: int, length: int) -> tuple[bytes, Meta]:
         raise OperationNotImplemented(IO_NOT_IMPLEMENTED)

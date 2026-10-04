@@ -20,7 +20,7 @@ from mcp.types import ToolAnnotations
 from pydantic import Field, ValidationError
 
 from . import __version__, validation
-from .backends import BackendUnavailable, DeviceRejected, RateLimited
+from .backends import DeviceRejected, RateLimited, RequestNotSent
 from .config import ProfinetConfig
 from .gsd_parser import GSDMLError, GSDParser
 from .pn_client import (
@@ -82,7 +82,8 @@ Alias = Annotated[str, Field(min_length=1, max_length=200, description="Alias de
 FilePath = Annotated[str, Field(min_length=1, max_length=4096, description="Path of a GSDML (.xml) file")]
 
 READ = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
-WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True)
+# Rule 13: nothing that changes a device advertises idempotency (it would invite blind retries).
+WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True)
 LOCAL = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 
 
@@ -215,7 +216,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
                 return err(tool, str(exc), backend_meta(refused=True, **not_sent))
             except OperationNotImplemented as exc:
                 return err(tool, str(exc), backend_meta(not_implemented=True, **not_sent))
-            except (BackendNotConfigured, BackendUnavailable) as exc:
+            except (BackendNotConfigured, RequestNotSent) as exc:
                 return err(tool, str(exc), backend_meta(**not_sent))
             except DeviceRejected as exc:
                 return err(tool, str(exc), backend_meta(**outcome(tool, "rejected", True)))
@@ -323,7 +324,7 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
 
     # -- DCP configuration ---------------------------------------------------------------
 
-    @tool(ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True))
+    @tool(WRITE)
     async def identify_device(device_mac: DeviceMac, duration_s: IdentifySeconds = 5) -> Envelope:
         """Make a device flash its identification LED (DCP Set Signal) so it can be found in the cabinet.
 
