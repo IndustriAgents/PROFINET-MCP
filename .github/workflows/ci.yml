@@ -14,8 +14,9 @@ permissions:
   contents: read
 
 # Everything here runs without PROFINET hardware and without raw-socket
-# privileges: the server's PROFINET client is still a scaffold that sends no
-# frames, and the mock IO device is started in-process on a free local port.
+# privileges: the server's tests drive the mock IO device (started as a
+# subprocess on an OS-assigned local port) and use fake layer-2 transports
+# for DCP, so no raw socket is ever opened.
 jobs:
   server:
     name: MCP server (profinet-python)
@@ -34,53 +35,25 @@ jobs:
       - name: Install dependencies from uv.lock
         run: uv sync --locked
 
+      - name: Lint
+        run: uv run --no-sync ruff check .
+
+      - name: Check formatting
+        run: uv run --no-sync ruff format --check .
+
       - name: Byte-compile sources
         run: uv run --no-sync python -m compileall -q src
 
       - name: Import package
-        run: uv run --no-sync python -c "import profinet_mcp, profinet_mcp.cli, profinet_mcp.server, profinet_mcp.tools, profinet_mcp.pn_client, profinet_mcp.gsd_parser"
+        run: uv run --no-sync python -c "import profinet_mcp, profinet_mcp.cli, profinet_mcp.server, profinet_mcp.tools, profinet_mcp.pn_client, profinet_mcp.backends, profinet_mcp.dcp, profinet_mcp.gsd_parser"
 
-      # A real MCP session over stdio: initialize, tools/list, and one
-      # read-only tool call. No network interface is opened.
-      - name: MCP handshake over stdio
-        run: |
-          uv run --no-sync python - <<'EOF'
-          import json
-          import sys
+      - name: Console entry point
+        run: uv run --no-sync profinet-mcp --help
 
-          import anyio
-          from mcp import ClientSession, StdioServerParameters
-          from mcp.client.stdio import stdio_client
-
-          EXPECTED = {
-              "discover_devices", "get_device_info", "set_device_name",
-              "set_device_ip", "identify_device", "read_io_data",
-              "write_io_data", "load_gsd_file", "list_devices",
-              "read_device_by_alias", "write_device_by_alias", "ping",
-              "get_connection_status", "test_device_communication",
-          }
-
-          async def main() -> None:
-              params = StdioServerParameters(
-                  command=sys.executable,
-                  args=["-m", "profinet_mcp.cli"],
-              )
-              async with stdio_client(params) as (read, write):
-                  async with ClientSession(read, write) as session:
-                      init = await session.initialize()
-                      print("initialize:", init.serverInfo.name)
-                      names = {tool.name for tool in (await session.list_tools()).tools}
-                      print("tools/list:", sorted(names))
-                      assert names == EXPECTED, f"unexpected tool set: {sorted(names ^ EXPECTED)}"
-                      result = await session.call_tool("ping", {})
-                      assert not result.isError, result
-                      envelope = json.loads(result.content[0].text)
-                      print("ping:", envelope)
-                      assert envelope["success"] is True, envelope
-                      assert "connection" in envelope["data"], envelope
-
-          anyio.run(main)
-          EOF
+      # Unit tests plus integration tests that start ../profinet-mock-server
+      # and drive the real MCP server over stdio with the MCP client SDK.
+      - name: Tests
+        run: uv run --no-sync pytest -v
 
   mock:
     name: Mock IO device (profinet-mock-server)
@@ -99,6 +72,12 @@ jobs:
       - name: Install dependencies from uv.lock
         run: uv sync --locked
 
+      - name: Lint
+        run: uv run --no-sync ruff check .
+
+      - name: Check formatting
+        run: uv run --no-sync ruff format --check .
+
       - name: Byte-compile sources
         run: uv run --no-sync python -m compileall -q profinet_mock_device.py
 
@@ -108,66 +87,7 @@ jobs:
       - name: Console entry point
         run: uv run --no-sync profinet-mock-server --help
 
-      # Starts the mock in-process on a free local port and drives its
-      # TCP JSON-lines protocol: discover, read, write + read back, errors.
-      # The update interval is set high so the simulated values stay put.
-      - name: JSON protocol round trip
-        run: |
-          uv run --no-sync python - <<'EOF'
-          import asyncio
-          import json
-          import socket
-
-          from profinet_mock_device import MockConfig, ProfinetMockServer
-
-          def free_port() -> int:
-              with socket.socket() as s:
-                  s.bind(("127.0.0.1", 0))
-                  return s.getsockname()[1]
-
-          async def main() -> None:
-              port = free_port()
-              server = ProfinetMockServer(
-                  MockConfig(host="127.0.0.1", port=port, update_interval=3600)
-              )
-              await server.start()
-              reader, writer = await asyncio.open_connection("127.0.0.1", port)
-
-              async def ask(request):
-                  writer.write(json.dumps(request).encode() + b"\n")
-                  await writer.drain()
-                  return json.loads(await asyncio.wait_for(reader.readline(), 10))
-
-              try:
-                  found = await ask({"op": "discover"})
-                  print("discover:", found)
-                  assert found["success"], found
-                  assert [d["device_name"] for d in found["data"]] == ["PN-DEVICE-01"], found
-
-                  read = await ask({"op": "read", "device": "PN-DEVICE-01", "slot": 1, "subslot": 1, "length": 8})
-                  print("read 1:1:", read)
-                  assert read["success"], read
-                  assert len(bytes.fromhex(read["data"]["raw_data_hex"])) == 8, read
-
-                  wrote = await ask({"op": "write", "device": "PN-DEVICE-01", "slot": 1, "subslot": 2, "data": [1, 2, 3, 4]})
-                  print("write 1:2:", wrote)
-                  assert wrote["success"] and wrote["data"]["written_bytes"] == 4, wrote
-
-                  back = await ask({"op": "read", "device": "PN-DEVICE-01", "slot": 1, "subslot": 2, "length": 4})
-                  print("read back 1:2:", back)
-                  assert back["success"] and back["data"]["raw_data_hex"] == "01020304", back
-
-                  missing = await ask({"op": "read", "device": "NO-SUCH-DEVICE", "slot": 1, "subslot": 1, "length": 1})
-                  print("read (unknown device):", missing)
-                  assert missing["success"] is False, missing
-
-                  unknown = await ask({"op": "reboot"})
-                  print("unknown op:", unknown)
-                  assert unknown["success"] is False, unknown
-              finally:
-                  writer.close()
-                  await writer.wait_closed()
-                  await server.stop()
-
-          asyncio.run(main())
-          EOF
+      # Request validation, the DCP-style operations, devices files, .env
+      # loading and a TCP JSON-lines round trip on an ephemeral port.
+      - name: Tests
+        run: uv run --no-sync pytest -v
