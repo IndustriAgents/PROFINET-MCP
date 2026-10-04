@@ -1,0 +1,29 @@
+name: Notify IndustriConnect
+
+# Tells IndustriAgents/IndustriConnect that main moved, so it can bump its
+# PROFINET-Project submodule pointer without waiting for its nightly cron.
+on:
+  push:
+    branches: [main]
+
+# The dispatch authenticates with the INDUSTRICONNECT_DISPATCH_TOKEN secret,
+# so the workflow's own GITHUB_TOKEN needs no permissions at all.
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch submodule sync
+        env:
+          GH_TOKEN: ${{ secrets.INDUSTRICONNECT_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::INDUSTRICONNECT_DISPATCH_TOKEN not set; skipping."
+            exit 0
+          fi
+          gh api repos/IndustriAgents/IndustriConnect/dispatches \
+            -f event_type=protocol-mcp-updated \
+            -f 'client_payload[repo]=${{ github.repository }}' \
+            -f 'client_payload[sha]=${{ github.sha }}'

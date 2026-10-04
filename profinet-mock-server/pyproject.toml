@@ -4,11 +4,17 @@ version = "0.1.0"
 description = "Mock PROFINET IO device for MCP integration tests."
 readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "IndustriAgents" }]
 dependencies = [
     "anyio>=4.0.0",
     "rich>=13.7.0",
     "python-dotenv>=1.1.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/IndustriAgents/PROFINET-MCP"
+Issues = "https://github.com/IndustriAgents/PROFINET-MCP/issues"
 
 [project.scripts]
 profinet-mock-server = "profinet_mock_device:main"
