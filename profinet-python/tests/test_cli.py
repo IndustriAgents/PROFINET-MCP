@@ -55,3 +55,20 @@ def test_missing_env_file_is_an_error(tmp_path) -> None:
     result = run_cli("--env-file", str(tmp_path / "nope.env"), cwd=tmp_path)
     assert result.returncode == 2
     assert "does not exist" in result.stderr
+
+
+def test_discovered_dotenv_switches_are_ignored_in_a_real_launch(tmp_path) -> None:
+    """The way an MCP client launches the server: cwd is the client's project, which may hold a .env."""
+    (tmp_path / ".env").write_text("PROFINET_BACKEND=mock\nPROFINET_WRITES_ENABLED=true\n")
+    result = subprocess.run(
+        [sys.executable, "-m", "profinet_mcp.cli"],
+        cwd=tmp_path,
+        env=clean_env(),
+        stdin=subprocess.DEVNULL,  # EOF: the server starts and exits
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert "warning: ignoring PROFINET_WRITES_ENABLED" in result.stderr
+    assert "backend=mock" in result.stderr and "writes disabled" in result.stderr
+    assert result.stdout == ""

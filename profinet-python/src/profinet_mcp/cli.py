@@ -4,17 +4,24 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from dotenv import find_dotenv, load_dotenv
+from dotenv import dotenv_values, find_dotenv, load_dotenv
 
 from . import __version__
 from .config import ConfigError, ProfinetConfig
 from .server import ProfinetMCPServer
 
 log = logging.getLogger("profinet_mcp")
+
+#: Safety switches. They are honoured only from the real environment or an explicit --env-file, never
+#: from a .env that was found automatically: with a direct launch the working directory is the MCP
+#: client's project, which may not be trusted.
+SAFETY_SWITCH = re.compile(r"^PROFINET_[A-Z0-9_]*_ENABLED$")
 
 ENVIRONMENT_HELP = """\
 configuration (environment variables, or a .env file):
@@ -26,9 +33,27 @@ configuration (environment variables, or a .env file):
                                 identify_device (default false)
   DEVICE_MAP_FILE               JSON file of device aliases
   PROFINET_GSD_PATH             directory searched by load_gsd_file
+Safety switches (PROFINET_*_ENABLED) are read only from the real environment or
+an explicit --env-file; a .env found in the working directory cannot turn them on.
 See profinet-python/README.md for the full list.
 
 The server speaks MCP on stdin/stdout; start it from an MCP client."""
+
+
+def load_discovered_dotenv(path: str | os.PathLike[str]) -> list[str]:
+    """Load an automatically found .env without its safety switches; return the switches it tried to set.
+
+    Like ``load_dotenv``, values already in the environment win.
+    """
+    ignored = []
+    for name, value in dotenv_values(path).items():
+        if value is None or name in os.environ:
+            continue
+        if SAFETY_SWITCH.match(name):
+            ignored.append(name)
+            continue
+        os.environ[name] = value
+    return ignored
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -43,7 +68,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--env-file",
         type=Path,
         metavar="PATH",
-        help="load settings from this .env file instead of searching the working directory and its parents",
+        help=(
+            "load settings, safety switches included, from this file instead of searching the working "
+            "directory and its parents for a .env (which may not set safety switches)"
+        ),
     )
     return parser
 
@@ -57,7 +85,14 @@ def main(argv: Sequence[str] | None = None) -> None:
             parser.error(f"--env-file {args.env_file} does not exist")
         load_dotenv(args.env_file)
     else:
-        load_dotenv(find_dotenv(usecwd=True))
+        path = find_dotenv(usecwd=True)
+        if path:
+            for name in load_discovered_dotenv(path):
+                print(
+                    f"profinet-mcp: warning: ignoring {name} from {path}: safety switches are only read from the "
+                    "real environment or an explicit --env-file",
+                    file=sys.stderr,
+                )
 
     # Configuration is read only now, after load_dotenv(), so .env settings apply.
     try:

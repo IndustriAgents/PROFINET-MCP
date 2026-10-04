@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from profinet_mcp import cli
@@ -74,8 +76,11 @@ def test_unusable_settings_are_rejected(env: dict, fragment: str) -> None:
         ProfinetConfig.from_env(env)
 
 
-def test_cli_reads_every_setting_from_dotenv(isolated_env, monkeypatch) -> None:
-    """Regression: ProfinetConfig used to read os.environ at import time, before load_dotenv()."""
+def test_cli_reads_every_setting_from_dotenv(isolated_env, monkeypatch, capsys) -> None:
+    """Regression: ProfinetConfig used to read os.environ at import time, before load_dotenv().
+
+    A discovered .env sets connection settings, but its safety switches are ignored with a warning.
+    """
     (isolated_env / ".env").write_text(
         "\n".join(
             [
@@ -116,8 +121,12 @@ def test_cli_reads_every_setting_from_dotenv(isolated_env, monkeypatch) -> None:
     assert config.max_retries == 1
     assert config.retry_backoff_base == 0.1
     assert (config.mock_host, config.mock_port) == ("127.0.0.2", 5601)
-    assert config.writes_enabled is True
-    assert config.config_cmds_enabled is True
+    # Safety switches from an automatically found .env are ignored, loudly.
+    assert config.writes_enabled is False
+    assert config.config_cmds_enabled is False
+    stderr = capsys.readouterr().err
+    assert "ignoring PROFINET_WRITES_ENABLED" in stderr
+    assert "ignoring PROFINET_CONFIG_CMDS_ENABLED" in stderr
     assert str(config.device_map_path) == "devices.json"
     assert str(config.gsd_base_path) == "gsd"
     # The tools and the client share one config object, so their gates cannot disagree.
@@ -125,14 +134,55 @@ def test_cli_reads_every_setting_from_dotenv(isolated_env, monkeypatch) -> None:
     assert server.client.backend.port == 5601
 
 
-def test_cli_env_file_option(isolated_env, monkeypatch) -> None:
-    env_file = isolated_env / "custom.env"
-    env_file.write_text("PROFINET_BACKEND=network\nPROFINET_INTERFACE=en7\n")
+def run_cli(monkeypatch, argv: list[str]):
     captured = {}
     monkeypatch.setattr(cli.ProfinetMCPServer, "run", lambda self: captured.setdefault("server", self))
-    cli.main(["--env-file", str(env_file)])
-    assert captured["server"].config.backend == "network"
-    assert captured["server"].config.interface == "en7"
+    cli.main(argv)
+    return captured["server"].config
+
+
+def test_cli_env_file_option(isolated_env, monkeypatch, capsys) -> None:
+    """An explicit --env-file is trusted, safety switches included."""
+    env_file = isolated_env / "custom.env"
+    env_file.write_text(
+        "PROFINET_BACKEND=network\nPROFINET_INTERFACE=en7\n"
+        "PROFINET_WRITES_ENABLED=true\nPROFINET_CONFIG_CMDS_ENABLED=true\n"
+    )
+    config = run_cli(monkeypatch, ["--env-file", str(env_file)])
+    assert config.backend == "network"
+    assert config.interface == "en7"
+    assert config.writes_enabled is True and config.config_cmds_enabled is True
+    assert "ignoring" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("name", ["PROFINET_WRITES_ENABLED", "PROFINET_CONFIG_CMDS_ENABLED", "PROFINET_FUTURE_ENABLED"])
+def test_discovered_dotenv_cannot_turn_on_a_safety_switch(isolated_env, monkeypatch, capsys, name: str) -> None:
+    monkeypatch.setenv("PROFINET_FUTURE_ENABLED", "placeholder")
+    monkeypatch.delenv("PROFINET_FUTURE_ENABLED")
+    (isolated_env / ".env").write_text(f"PROFINET_BACKEND=mock\n{name}=true\n")
+    config = run_cli(monkeypatch, [])
+    assert config.backend == "mock"  # connection settings still apply
+    assert config.writes_enabled is False and config.config_cmds_enabled is False
+    assert name not in os.environ
+    assert f"warning: ignoring {name} from" in capsys.readouterr().err
+
+
+def test_dotenv_in_a_parent_directory_is_also_untrusted(isolated_env, monkeypatch, capsys) -> None:
+    (isolated_env / ".env").write_text("PROFINET_WRITES_ENABLED=1\n")
+    child = isolated_env / "project" / "sub"
+    child.mkdir(parents=True)
+    monkeypatch.chdir(child)
+    assert run_cli(monkeypatch, []).writes_enabled is False
+    assert "ignoring PROFINET_WRITES_ENABLED" in capsys.readouterr().err
+
+
+def test_real_environment_can_enable_switches(isolated_env, monkeypatch, capsys) -> None:
+    (isolated_env / ".env").write_text("PROFINET_BACKEND=mock\n")
+    monkeypatch.setenv("PROFINET_WRITES_ENABLED", "true")
+    monkeypatch.setenv("PROFINET_CONFIG_CMDS_ENABLED", "true")
+    config = run_cli(monkeypatch, [])
+    assert config.writes_enabled is True and config.config_cmds_enabled is True
+    assert "ignoring" not in capsys.readouterr().err
 
 
 def test_real_environment_wins_over_dotenv(isolated_env, monkeypatch) -> None:
