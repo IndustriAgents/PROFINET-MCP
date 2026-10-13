@@ -1,34 +1,48 @@
 [project]
 name = "profinet-mcp"
-version = "0.1.0"
-description = "MCP server for PROFINET discovery, configuration, and I/O tooling."
+version = "0.2.0"
+description = "MCP server for PROFINET IO: DCP discovery, GSDML parsing, and a full tool set against a mock IO device."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "IndustriAgents" }]
+# Floors are the lowest versions the test suite passes on (CI job "lowest-direct").
 dependencies = [
-    "anyio>=4.0.0",
-    "mcp[cli]>=1.6.0",
-    "pydantic>=2.6.0",
+    "anyio>=4.7.0",
+    "mcp[cli]>=1.22.0,<2",  # uses FastMCP internals (see server.py)
+    "pydantic>=2.11.0",
     "python-dotenv>=1.1.0",
     "scapy>=2.5.0",
-    "lxml>=4.9.0",
+    "lxml>=4.9.2",
 ]
 
 [project.urls]
 Repository = "https://github.com/IndustriAgents/PROFINET-MCP"
 Issues = "https://github.com/IndustriAgents/PROFINET-MCP/issues"
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.2.0",
-    "pytest-asyncio>=0.23.0",
-    "ruff>=0.6.0",
-]
-
 [project.scripts]
 profinet-mcp = "profinet_mcp.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2.0",
+    "ruff>=0.6.0",
+    # The integration tests run ../profinet-mock-server in this environment.
+    "rich>=13.8.0",
+]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = ["integration: starts the mock IO device and the MCP server as subprocesses"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]

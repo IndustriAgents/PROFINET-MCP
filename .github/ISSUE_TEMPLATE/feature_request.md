@@ -25,7 +25,11 @@ so say how it lines up with the equivalent tool elsewhere in the suite.
 
 **Can the mock answer it?**
 What the mock IO device would need to be able to simulate for this to be
-testable without real plant.
+testable without real plant (`PROFINET_BACKEND=mock`).
+
+**Real network**
+Does it need something the server does not have yet on `PROFINET_BACKEND=network`
+(raw-socket DCP beyond Identify, an IO-controller stack for cyclic I/O)?
 
 **Additional context**
 Links to the PROFINET specification, GSDML files, example devices, or related

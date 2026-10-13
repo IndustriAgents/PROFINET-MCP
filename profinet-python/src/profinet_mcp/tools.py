@@ -1,80 +1,186 @@
-"""MCP tool definitions for PROFINET interactions."""
+"""MCP tool definitions for PROFINET.
 
-from __future__ import annotations
+Every tool returns the IndustriConnect envelope ``{success, data, error, meta}``.
+Errors - including bad arguments, refused writes and operations the selected
+backend cannot perform - come back as ``success: false`` with a message; tools
+never raise. ``meta.backend`` names the backend that answered (``mock`` or
+``network``) for every tool that talks to devices.
+"""
 
+import functools
 import json
-import os
+import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any
 
-from mcp.server.fastmcp import Context, FastMCP
+import anyio
+import anyio.lowlevel
+from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+from pydantic import Field, ValidationError
 
-from .gsd_parser import GSDCacheEntry, GSDParser
-from .pn_client import ProfinetClient, ProfinetClientError
+from . import __version__, validation
+from .backends import ClientCancelled, DeviceRejected, RateLimited, RequestNotSent, tool_call
+
+try:  # private mcp<2 API (pinned in pyproject.toml); tests/test_tools.py fails if it moves
+    from mcp.server.lowlevel.server import request_ctx as _request_ctx
+except ImportError:  # pragma: no cover
+    _request_ctx = None
+from .config import ProfinetConfig
+from .gsd_parser import GSDMLError, GSDParser
+from .pn_client import (
+    WRITES_DISABLED,
+    BackendNotConfigured,
+    OperationNotImplemented,
+    OperationRefused,
+    OutcomeUnknown,
+    ProfinetClient,
+    ProfinetClientError,
+    config_cmds_refusal,
+)
+
+log = logging.getLogger(__name__)
+
+Envelope = dict[str, Any]
+
+# -- parameter types (the descriptions and limits end up in each tool's input schema) --
+
+DeviceName = Annotated[
+    str, Field(min_length=1, max_length=240, description="Station name (NameOfStation) of the device, e.g. line1-io")
+]
+DeviceRef = Annotated[
+    str,
+    Field(min_length=1, max_length=240, description="Station name, IP address or MAC address of the device"),
+]
+DeviceMac = Annotated[str, Field(min_length=1, max_length=64, description="MAC address, e.g. 00:11:22:33:44:55")]
+# Numbers are strict: true, "1" or 2.0 are rejected rather than coerced into a slot or a byte value.
+Slot = Annotated[
+    int,
+    Field(strict=True, ge=0, le=validation.MAX_SLOT, description="Slot number (slot 0 is the device access point)"),
+]
+Subslot = Annotated[int, Field(strict=True, ge=1, le=validation.MAX_SUBSLOT, description="Subslot number, usually 1")]
+DataLength = Annotated[
+    int,
+    Field(strict=True, ge=1, le=validation.MAX_IO_BYTES, description=f"Bytes to read (1-{validation.MAX_IO_BYTES})"),
+]
+ByteValues = Annotated[
+    list[Annotated[int, Field(strict=True, ge=0, le=255)]],
+    Field(min_length=1, max_length=validation.MAX_IO_BYTES, description="Bytes to write, each an integer 0-255"),
+]
+DiscoveryTimeout = Annotated[
+    float | None,
+    Field(
+        strict=True,
+        ge=0.5,
+        le=60,
+        description="Seconds to wait for answers, 0.5-60 (default: PROFINET_DCP_TIMEOUT, 5)",
+    ),
+]
+IdentifySeconds = Annotated[
+    int, Field(strict=True, ge=1, le=600, description="How long the device should flash, in seconds")
+]
+StationName = Annotated[
+    str, Field(min_length=1, max_length=240, description="New station name: lowercase a-z, 0-9, '-' and '.'")
+]
+IPv4 = Annotated[str, Field(min_length=7, max_length=15, description="IPv4 address, e.g. 192.168.1.20")]
+Alias = Annotated[str, Field(min_length=1, max_length=200, description="Alias defined in DEVICE_MAP_FILE")]
+FilePath = Annotated[str, Field(min_length=1, max_length=4096, description="Path of a GSDML (.xml) file")]
+
+READ = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
+# Rule 13: nothing that changes a device advertises idempotency (it would invite blind retries).
+WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=False, openWorldHint=True)
+LOCAL = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    val = os.getenv(name)
-    if val is None:
-        return default
-    return val.strip().lower() in {"1", "true", "yes", "y", "on"}
+def request_cancel_scope() -> Any | None:
+    """The MCP SDK's cancel scope for the request being handled, or None outside a request.
+
+    Read through the session's in-flight responder (``session._in_flight[request_id]._cancel_scope``), a
+    private mcp<2 API: guarded here, pinned by ``mcp<2``, and covered by a test that fails if it moves.
+    """
+    if _request_ctx is None:
+        return None
+    try:
+        context = _request_ctx.get()
+    except LookupError:
+        return None
+    in_flight = getattr(context.session, "_in_flight", None)
+    responder = in_flight.get(context.request_id) if isinstance(in_flight, dict) else None
+    return getattr(responder, "_cancel_scope", None)
 
 
-@dataclass(slots=True)
-class ToolConfig:
-    writes_enabled: bool = True
-    config_cmds_enabled: bool = False
-    device_map_path: Optional[Path] = None
-    gsd_base_path: Optional[Path] = None
+def envelope(success: bool, data: Any = None, error: str | None = None, meta: dict[str, Any] | None = None) -> Envelope:
+    return {"success": success, "data": data, "error": error, "meta": meta or {}}
 
-    @classmethod
-    def from_env(cls) -> "ToolConfig":
-        device_path = os.getenv("DEVICE_MAP_FILE")
-        gsd_path = os.getenv("PROFINET_GSD_PATH")
-        return cls(
-            writes_enabled=_env_bool("PROFINET_WRITES_ENABLED", True),
-            config_cmds_enabled=_env_bool("PROFINET_CONFIG_CMDS_ENABLED", False),
-            device_map_path=Path(device_path).expanduser() if device_path else None,
-            gsd_base_path=Path(gsd_path).expanduser() if gsd_path else None,
-        )
+
+#: Tools that change a device. Their envelopes always carry ``meta.outcome`` - "written" (confirmed),
+#: "rejected" (the device refused it), "unknown" (sent, but no usable reply: it may have been applied)
+#: or "not_sent" - and ``meta.request_sent`` (true, false, or null when it cannot be known).
+CHANGE_TOOLS = frozenset(
+    {"write_io_data", "write_device_by_alias", "set_device_name", "set_device_ip", "identify_device"}
+)
+
+
+def outcome(tool: str, result: str, request_sent: bool | None) -> dict[str, Any]:
+    return {"outcome": result, "request_sent": request_sent} if tool in CHANGE_TOOLS else {}
+
+
+def invalid_arguments(tool: str, exc: ValidationError) -> Envelope:
+    """Envelope for arguments that failed schema validation (wrong type, out of range, missing)."""
+    problems = [
+        {"argument": ".".join(str(part) for part in err.get("loc", ())) or "arguments", "problem": err.get("msg")}
+        for err in exc.errors(include_url=False)
+    ]
+    message = "; ".join(f"{p['argument']}: {p['problem']}" for p in problems)
+    meta = {"tool": tool, **outcome(tool, "not_sent", False), "invalid_arguments": problems}
+    return envelope(False, error=f"Invalid arguments: {message}", meta=meta)
 
 
 class DeviceMap:
-    def __init__(self, path: Optional[Path]) -> None:
+    """Aliases from ``DEVICE_MAP_FILE``, re-read whenever the file changes."""
+
+    def __init__(self, path: Path | None) -> None:
         self.path = path
-        self._devices: Dict[str, Dict[str, Any]] = {}
-        self._mtime: Optional[float] = None
+        self.error: str | None = None
+        self._devices: dict[str, Any] = {}
+        self._stamp: tuple[int, int] | None = None
         self.refresh()
 
     def refresh(self) -> None:
         if not self.path:
-            self._devices = {}
-            self._mtime = None
+            self._devices, self._stamp, self.error = {}, None, None
             return
         try:
             stat = self.path.stat()
-        except FileNotFoundError:
-            self._devices = {}
-            self._mtime = None
+        except OSError as exc:
+            self._devices, self._stamp = {}, None
+            self.error = f"DEVICE_MAP_FILE {self.path} cannot be read: {exc.strerror or exc}"
             return
-        if self._mtime and stat.st_mtime <= self._mtime:
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        if stamp == self._stamp:
             return
+        self._stamp = stamp
         try:
-            with self.path.open("r", encoding="utf-8") as fh:
-                data = json.load(fh)
-                if isinstance(data, dict):
-                    self._devices = {str(name): spec for name, spec in data.items()}
-                    self._mtime = stat.st_mtime
-        except Exception:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             self._devices = {}
-            self._mtime = stat.st_mtime
+            self.error = f"DEVICE_MAP_FILE {self.path} is not valid JSON: {exc}"
+            return
+        if not isinstance(data, dict):
+            self._devices = {}
+            self.error = f"DEVICE_MAP_FILE {self.path} must hold a JSON object mapping aliases to devices"
+            return
+        self._devices = {str(name): spec for name, spec in data.items()}
+        bad = sorted(name for name, spec in self._devices.items() if not isinstance(spec, dict))
+        self.error = f"DEVICE_MAP_FILE entries that are not JSON objects: {', '.join(bad)}" if bad else None
 
-    def get(self, alias: str) -> Optional[Dict[str, Any]]:
+    def get(self, alias: str) -> Any:
         self.refresh()
         return self._devices.get(alias)
 
-    def list(self) -> List[Dict[str, Any]]:
+    def list(self) -> list[dict[str, Any]]:
         self.refresh()
         return [
             {
@@ -82,168 +188,364 @@ class DeviceMap:
                 "device_name": spec.get("device_name"),
                 "ip_address": spec.get("ip_address"),
                 "description": spec.get("description"),
+                "slot": spec.get("slot"),
+                "subslot": spec.get("subslot", 1),
+                "data_length": spec.get("data_length", 8),
             }
             for alias, spec in self._devices.items()
+            if isinstance(spec, dict)
         ]
 
     def count(self) -> int:
-        self.refresh()
-        return len(self._devices)
+        return len(self.list())
 
 
 @dataclass(slots=True)
 class ToolResources:
     client: ProfinetClient
-    config: ToolConfig
+    config: ProfinetConfig
     device_map: DeviceMap
     gsd_parser: GSDParser
 
 
 def register_tools(server: FastMCP, resources: ToolResources) -> None:
-    def _client(ctx: Context) -> ProfinetClient:
-        return ctx.request_context.lifespan_context.client
+    client = resources.client
+    config = resources.config
 
-    def _result(success: bool, data: Any = None, error: Optional[str] = None, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        return {"success": success, "data": data, "error": error, "meta": meta or {}}
+    def ok(tool: str, data: Any, meta: dict[str, Any] | None = None) -> Envelope:
+        return envelope(True, data=data, meta={"tool": tool, **(meta or {})})
 
-    def _ok(data: Any = None, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        return _result(True, data=data, meta=meta)
+    def err(tool: str, message: str, meta: dict[str, Any] | None = None) -> Envelope:
+        return envelope(False, error=message, meta={"tool": tool, **(meta or {})})
 
-    def _err(message: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        return _result(False, error=message, meta=meta)
+    def backend_meta(**extra: Any) -> dict[str, Any]:
+        return {"backend": client.backend_name, **extra}
 
-    def _ensure_writes(tool: str) -> Optional[Dict[str, Any]]:
-        if not resources.config.writes_enabled:
-            return _err("Write operations are disabled by configuration", {"tool": tool})
-        return None
+    def guarded(fn: Callable[..., Awaitable[Envelope]]) -> Callable[..., Awaitable[Envelope]]:
+        """Turn every exception into a ``success: false`` envelope."""
+        tool = fn.__name__
 
-    def _ensure_config(tool: str) -> Optional[Dict[str, Any]]:
-        if not resources.config.config_cmds_enabled:
-            return _err("Configuration commands are disabled (set PROFINET_CONFIG_CMDS_ENABLED=true)", {"tool": tool})
-        return None
+        not_sent = outcome(tool, "not_sent", False)
 
-    @server.tool()
-    async def discover_devices(ctx: Context, timeout: Optional[int] = None) -> Dict[str, Any]:
-        try:
-            devices, meta = await _client(ctx).discover_devices(timeout)
-        except Exception as exc:
-            return _err(str(exc))
-        return _ok(data={"devices": devices}, meta=meta)
+        async def run(scope: Any, args: tuple, kwargs: dict) -> Envelope:
+            try:
+                # The overall deadline of every device request counts from here; the request's cancel scope
+                # lets the pre-send gate see a cancellation that anyio has not delivered yet.
+                with tool_call(cancel_scope=scope):
+                    result = await fn(*args, **kwargs)
+            except validation.InvalidArgument as exc:
+                return err(tool, f"Invalid arguments: {exc}", not_sent)
+            except RateLimited as exc:
+                retry = round(exc.retry_after, 1)
+                return err(tool, str(exc), backend_meta(refused=True, retry_after_s=retry, **not_sent))
+            except OperationRefused as exc:
+                return err(tool, str(exc), backend_meta(refused=True, **not_sent))
+            except OperationNotImplemented as exc:
+                return err(tool, str(exc), backend_meta(not_implemented=True, **not_sent))
+            except ClientCancelled as exc:
+                log.warning("%s: %s", tool, exc)  # stderr: the client was told "Request cancelled" already
+                return err(tool, str(exc), backend_meta(**not_sent))
+            except (BackendNotConfigured, RequestNotSent) as exc:
+                return err(tool, str(exc), backend_meta(**not_sent))
+            except DeviceRejected as exc:
+                return err(tool, str(exc), backend_meta(**outcome(tool, "rejected", True)))
+            except OutcomeUnknown as exc:
+                return err(tool, str(exc), backend_meta(outcome_unknown=True, **outcome(tool, "unknown", True)))
+            except ProfinetClientError as exc:
+                return err(tool, str(exc), backend_meta(**outcome(tool, "unknown", None)))
+            except Exception as exc:  # never let a tool call crash the session
+                log.exception("Tool %s failed", tool)
+                return err(tool, f"Internal error: {type(exc).__name__}: {exc}", outcome(tool, "unknown", None))
+            if result.get("success"):
+                result["meta"].update(outcome(tool, "written", True))
+            return result
 
-    @server.tool()
-    async def get_device_info(ctx: Context, device_name: str) -> Dict[str, Any]:
-        # For now, rely on cached discovery results
-        try:
-            devices, meta = await _client(ctx).discover_devices()
-        except Exception as exc:
-            return _err(str(exc), {"device_name": device_name})
-        for device in devices:
-            if device.get("device_name") == device_name or device.get("ip_address") == device_name:
-                return _ok(data=device, meta=meta)
-        return _err("Device not found", {"device_name": device_name})
+        @functools.wraps(fn)
+        async def wrapper(*args: Any, **kwargs: Any) -> Envelope:
+            scope = request_cancel_scope()
+            envelope_ = await run(scope, args, kwargs)
+            if getattr(scope, "cancel_called", False):
+                # The SDK has already answered "Request cancelled"; a second reply would trip its
+                # `assert not self._completed` and could take the server down. End as the cancellation it
+                # is (the SDK suppresses it) instead of returning an envelope.
+                log.warning("%s: the MCP client cancelled the call; %s", tool, envelope_.get("error") or "done")
+                await anyio.lowlevel.checkpoint_if_cancelled()
+            return envelope_
 
-    @server.tool()
-    async def set_device_name(ctx: Context, device_mac: str, name: str) -> Dict[str, Any]:
-        guard = _ensure_config("set_device_name")
-        if guard:
-            return guard
-        try:
-            meta = await _client(ctx).set_device_name(device_mac, name)
-        except Exception as exc:
-            return _err(str(exc), {"device_mac": device_mac})
-        return _ok(data={"device_mac": device_mac, "name": name}, meta=meta)
+        return wrapper
 
-    @server.tool()
-    async def set_device_ip(ctx: Context, device_mac: str, ip_address: str, subnet_mask: str, gateway: Optional[str] = None) -> Dict[str, Any]:
-        guard = _ensure_config("set_device_ip")
-        if guard:
-            return guard
-        try:
-            meta = await _client(ctx).set_device_ip(device_mac, ip_address, subnet_mask, gateway)
-        except Exception as exc:
-            return _err(str(exc), {"device_mac": device_mac})
-        return _ok(data={"device_mac": device_mac, "ip_address": ip_address}, meta=meta)
+    def tool(annotations: ToolAnnotations) -> Callable[[Callable[..., Awaitable[Envelope]]], Any]:
+        def decorate(fn: Callable[..., Awaitable[Envelope]]) -> Any:
+            return server.tool(annotations=annotations)(guarded(fn))
 
-    @server.tool()
-    async def identify_device(ctx: Context, device_mac: str, duration_s: int = 5) -> Dict[str, Any]:
-        try:
-            meta = await _client(ctx).identify_device(device_mac, duration_s)
-        except Exception as exc:
-            return _err(str(exc), {"device_mac": device_mac})
-        return _ok(data={"device_mac": device_mac, "identify_duration_s": duration_s}, meta=meta)
+        return decorate
 
-    @server.tool()
-    async def read_io_data(ctx: Context, device_name: str, slot: int, subslot: int, data_length: int) -> Dict[str, Any]:
-        try:
-            payload, meta = await _client(ctx).read_io_data(device_name, slot, subslot, data_length)
-        except Exception as exc:
-            return _err(str(exc), {"device_name": device_name})
-        return _ok(
-            data={"device_name": device_name, "slot": slot, "subslot": subslot, "raw_data_hex": payload.hex()},
-            meta=meta,
+    async def read(tool_name: str, device_name: str, slot: int, subslot: int, length: int, **extra: Any) -> Envelope:
+        device_name = validation.device_identifier(device_name)
+        payload, meta = await client.read_io_data(device_name, slot, subslot, length)
+        data = {
+            **extra,
+            "device_name": device_name,
+            "slot": slot,
+            "subslot": subslot,
+            "data_length": len(payload),
+            "raw_data_hex": payload.hex(),
+            "bytes": list(payload),
+        }
+        return ok(tool_name, data, meta)
+
+    async def write(
+        tool_name: str, device_name: str, slot: int, subslot: int, data: list[int], **extra: Any
+    ) -> Envelope:
+        device_name = validation.device_identifier(device_name)
+        payload = bytes(data)  # values were range-checked by the schema
+        result, meta = await client.write_io_data(device_name, slot, subslot, payload)
+        return ok(
+            tool_name,
+            {**extra, "device_name": device_name, "slot": slot, "subslot": subslot, **result},
+            meta,
         )
 
-    @server.tool()
-    async def write_io_data(ctx: Context, device_name: str, slot: int, subslot: int, data: List[int]) -> Dict[str, Any]:
-        guard = _ensure_writes("write_io_data")
-        if guard:
-            return guard
-        payload = bytes(int(b) & 0xFF for b in data)
-        try:
-            meta = await _client(ctx).write_io_data(device_name, slot, subslot, payload)
-        except Exception as exc:
-            return _err(str(exc), {"device_name": device_name})
-        return _ok(data={"device_name": device_name, "written_bytes": len(payload)}, meta=meta)
-
-    @server.tool()
-    async def load_gsd_file(ctx: Context, filepath: str) -> Dict[str, Any]:  # noqa: ARG001
-        try:
-            entry = resources.gsd_parser.load_cached(filepath)
-        except Exception as exc:
-            return _err(str(exc), {"filepath": filepath})
-        return _ok(data={"filepath": str(entry.path), "modules": entry.modules, "metadata": entry.metadata})
-
-    @server.tool()
-    async def list_devices(ctx: Context) -> Dict[str, Any]:  # noqa: ARG001
-        return _ok(data={"devices": resources.device_map.list(), "count": resources.device_map.count()})
-
-    @server.tool()
-    async def read_device_by_alias(ctx: Context, alias: str) -> Dict[str, Any]:
+    def alias_spec(alias: str) -> tuple[str, dict[str, Any]]:
         spec = resources.device_map.get(alias)
-        if not spec:
-            return _err(f"Unknown alias '{alias}'")
+        if spec is None:
+            known = ", ".join(sorted(a["alias"] for a in resources.device_map.list())) or "none"
+            hint = f" ({resources.device_map.error})" if resources.device_map.error else ""
+            raise validation.InvalidArgument(f"unknown alias {alias!r}; known aliases: {known}{hint}")
+        if not isinstance(spec, dict):
+            raise validation.InvalidArgument(f"alias {alias!r} in DEVICE_MAP_FILE is not a JSON object")
         device_name = spec.get("device_name") or alias
-        return await read_io_data(ctx, device_name, spec.get("slot", 0), spec.get("subslot", 1), spec.get("data_length", 8))
+        return validation.device_identifier(str(device_name), f"alias {alias!r} device_name"), spec
 
-    @server.tool()
-    async def write_device_by_alias(ctx: Context, alias: str, data: List[int]) -> Dict[str, Any]:
-        guard = _ensure_writes("write_device_by_alias")
-        if guard:
-            return guard
-        spec = resources.device_map.get(alias)
-        if not spec:
-            return _err(f"Unknown alias '{alias}'")
-        return await write_io_data(ctx, spec.get("device_name") or alias, spec.get("slot", 0), spec.get("subslot", 1), data)
+    # -- discovery ---------------------------------------------------------------------
 
-    @server.tool()
-    async def ping(ctx: Context) -> Dict[str, Any]:
-        return _ok(
-            data={
-                "connection": _client(ctx).connection_status(),
-                "writes_enabled": resources.config.writes_enabled,
-                "config_cmds_enabled": resources.config.config_cmds_enabled,
-                "device_aliases": resources.device_map.count(),
-            }
+    @tool(READ)
+    async def discover_devices(timeout: DiscoveryTimeout = None) -> Envelope:
+        """Discover PROFINET IO devices.
+
+        Network backend: multicasts a DCP Identify All request on PROFINET_INTERFACE and lists every
+        device that answers within `timeout` seconds (needs raw-socket privileges). Mock backend: lists
+        the devices simulated by profinet-mock-server. Each device reports device_name, mac_address,
+        ip_address, subnet_mask, gateway, vendor_id, device_id, device_type and type_of_station where
+        known (null otherwise). meta.backend says which backend answered.
+        """
+        devices, meta = await client.discover_devices(timeout)
+        return ok("discover_devices", {"devices": devices, "count": len(devices)}, meta)
+
+    @tool(READ)
+    async def get_device_info(device_name: DeviceRef) -> Envelope:
+        """Discovery details for one device, looked up by station name, IP address or MAC address.
+
+        Runs discovery (see discover_devices) and returns the matching device, or success=false if no
+        device with that name or address answered.
+        """
+        wanted = validation.device_identifier(device_name)
+        device, meta = await client.find_device(wanted)
+        if device is None:
+            return err("get_device_info", f"No device named or addressed {wanted!r} answered discovery", meta)
+        return ok("get_device_info", device, meta)
+
+    @tool(READ)
+    async def test_device_communication(device_name: DeviceRef) -> Envelope:
+        """Check that a device answers, by station name, IP address or MAC address.
+
+        Uses discovery (DCP Identify on the network backend), so it works for any IO device without
+        knowing its modules. Returns reachable=true with the round trip in meta.duration_ms, or
+        success=false if the device did not answer.
+        """
+        wanted = validation.device_identifier(device_name)
+        device, meta = await client.find_device(wanted)
+        if device is None:
+            return err("test_device_communication", f"Device {wanted!r} did not answer", {**meta, "reachable": False})
+        return ok(
+            "test_device_communication",
+            {"device_name": device.get("device_name"), "reachable": True, "device": device},
+            meta,
         )
 
-    @server.tool()
-    async def get_connection_status(ctx: Context) -> Dict[str, Any]:
-        return _ok(data=_client(ctx).connection_status())
+    # -- DCP configuration ---------------------------------------------------------------
 
-    @server.tool()
-    async def test_device_communication(ctx: Context, device_name: str) -> Dict[str, Any]:
+    @tool(WRITE)
+    async def identify_device(device_mac: DeviceMac, duration_s: IdentifySeconds = 5) -> Envelope:
+        """Make a device flash its identification LED (DCP Set Signal) so it can be found in the cabinet.
+
+        A DCP configuration command: refused unless both PROFINET_WRITES_ENABLED=true and
+        PROFINET_CONFIG_CMDS_ENABLED=true, like set_device_name. Supported by the mock backend. The
+        network backend does not implement DCP Set and returns success=false without sending anything.
+        """
+        if refusal := config_cmds_refusal(config):
+            raise OperationRefused(refusal)
+        mac = validation.mac_address(device_mac)
+        result, meta = await client.identify_device(mac, duration_s)
+        return ok("identify_device", result, meta)
+
+    @tool(WRITE)
+    async def set_device_name(device_mac: DeviceMac, name: StationName) -> Envelope:
+        """Assign a new station name (DCP Set NameOfStation) to the device with this MAC address.
+
+        Refused unless both PROFINET_WRITES_ENABLED=true and PROFINET_CONFIG_CMDS_ENABLED=true:
+        renaming a device in a running plant takes it away from the IO controller that expects it.
+        The name must follow the PROFINET rules (lowercase a-z, 0-9, '-', dot-separated labels of
+        1-63 characters, at most 240 in total). Supported by the mock backend; the network backend
+        returns success=false without sending anything.
+        """
+        if refusal := config_cmds_refusal(config):
+            raise OperationRefused(refusal)
+        mac = validation.mac_address(device_mac)
+        new_name = validation.station_name(name)
+        result, meta = await client.set_device_name(mac, new_name)
+        return ok("set_device_name", result, meta)
+
+    @tool(WRITE)
+    async def set_device_ip(
+        device_mac: DeviceMac,
+        ip_address: IPv4,
+        subnet_mask: IPv4,
+        gateway: Annotated[str | None, Field(description="Default gateway; omit or 0.0.0.0 for none")] = None,
+    ) -> Envelope:
+        """Assign IP address, subnet mask and gateway (DCP Set IP) to the device with this MAC address.
+
+        Refused unless both PROFINET_WRITES_ENABLED=true and PROFINET_CONFIG_CMDS_ENABLED=true. The
+        gateway, if given, must be inside the subnet. Supported by the mock backend; the network
+        backend returns success=false without sending anything.
+        """
+        if refusal := config_cmds_refusal(config):
+            raise OperationRefused(refusal)
+        mac = validation.mac_address(device_mac)
+        ip, mask, gw = validation.ip_settings(ip_address, subnet_mask, gateway)
+        result, meta = await client.set_device_ip(mac, ip, mask, gw)
+        return ok("set_device_ip", result, meta)
+
+    # -- I/O data ------------------------------------------------------------------------
+
+    @tool(READ)
+    async def read_io_data(device_name: DeviceName, slot: Slot, subslot: Subslot, data_length: DataLength) -> Envelope:
+        """Read I/O data from a slot/subslot of a device; returns raw_data_hex and the byte values.
+
+        Supported by the mock backend. The network backend returns success=false: cyclic PROFINET IO
+        needs an IO controller with an application relationship, which this server does not have.
+        """
+        return await read("read_io_data", device_name, slot, subslot, data_length)
+
+    @tool(WRITE)
+    async def write_io_data(device_name: DeviceName, slot: Slot, subslot: Subslot, data: ByteValues) -> Envelope:
+        """Write bytes to an output slot/subslot of a device. This changes physical outputs.
+
+        Refused unless PROFINET_WRITES_ENABLED=true (the server is read-only by default). Supported by
+        the mock backend; the network backend returns success=false without sending anything.
+        """
+        if not config.writes_enabled:
+            raise OperationRefused(WRITES_DISABLED)
+        return await write("write_io_data", device_name, slot, subslot, data)
+
+    # -- device map aliases --------------------------------------------------------------
+
+    @tool(LOCAL)
+    async def list_devices() -> Envelope:
+        """List the aliases defined in DEVICE_MAP_FILE (device name, address, slot, subslot, length).
+
+        Reads only the local file; no device is contacted.
+        """
+        meta = {"source": "device_map", "device_map_file": str(resources.device_map.path or "") or None}
+        entries = resources.device_map.list()
+        if resources.device_map.error and not entries:
+            return err("list_devices", resources.device_map.error, meta)
+        data: dict[str, Any] = {"devices": entries, "count": len(entries)}
+        if resources.device_map.error:
+            data["warning"] = resources.device_map.error
+        return ok("list_devices", data, meta)
+
+    @tool(READ)
+    async def read_device_by_alias(alias: Alias) -> Envelope:
+        """read_io_data for the device, slot, subslot and length behind an alias from DEVICE_MAP_FILE."""
+        device_name, spec = alias_spec(alias)
+        source = f"alias {alias!r}"
+        slot, subslot = validation.io_address(spec.get("slot"), spec.get("subslot", 1), source=source)
+        length = validation.data_length(spec.get("data_length", 8), source=source)
+        return await read("read_device_by_alias", device_name, slot, subslot, length, alias=alias)
+
+    @tool(WRITE)
+    async def write_device_by_alias(alias: Alias, data: ByteValues) -> Envelope:
+        """write_io_data for the device, slot and subslot behind an alias from DEVICE_MAP_FILE.
+
+        Refused unless PROFINET_WRITES_ENABLED=true, like write_io_data.
+        """
+        if not config.writes_enabled:
+            raise OperationRefused(WRITES_DISABLED)
+        device_name, spec = alias_spec(alias)
+        slot, subslot = validation.io_address(spec.get("slot"), spec.get("subslot", 1), source=f"alias {alias!r}")
+        return await write("write_device_by_alias", device_name, slot, subslot, data, alias=alias)
+
+    # -- GSDML -----------------------------------------------------------------------------
+
+    @tool(LOCAL)
+    async def load_gsd_file(filepath: FilePath) -> Envelope:
+        """Parse a GSDML device description file: device identity, access points and modules.
+
+        Returns metadata (vendor, vendor/device IDs, device name, GSDML version), the device access
+        points with their usable modules, every module with its fixed submodules and its pluggable
+        submodules (resolved from the SubmoduleList; unresolved references are flagged and the module
+        gets submodules_incomplete=true), and input/output sizes in bytes (null when a data type's size
+        is unknown). Relative paths are also looked up in
+        PROFINET_GSD_PATH. Files are cached and re-parsed when they change on disk.
+        """
+        meta: dict[str, Any] = {"source": "gsdml_file", "filepath": filepath}
         try:
-            payload, meta = await _client(ctx).read_io_data(device_name, 0, 1, 4)
-        except Exception as exc:
-            return _err(str(exc), {"device_name": device_name})
-        return _ok(data={"device_name": device_name, "bytes": payload.hex()}, meta=meta)
+            # In a worker thread so the Python part of the work interleaves with other requests. lxml holds
+            # the GIL while it parses, so what keeps this short is the input limits (8 MiB, no DTD), not a
+            # timeout: an 8 MiB file parses in well under a second.
+            entry, cached = await anyio.to_thread.run_sync(resources.gsd_parser.load_cached, filepath)
+        except FileNotFoundError as exc:
+            return err("load_gsd_file", str(exc), meta)
+        except GSDMLError as exc:
+            return err("load_gsd_file", str(exc), meta)
+        except OSError as exc:
+            return err("load_gsd_file", f"Cannot read {filepath}: {exc.strerror or exc}", meta)
+        meta["cached"] = cached
+        return ok(
+            "load_gsd_file",
+            {
+                "filepath": str(entry.path),
+                "metadata": entry.metadata,
+                "device_access_points": entry.device_access_points,
+                "modules": entry.modules,
+                "module_count": len(entry.modules),
+                "submodules": entry.submodules,
+            },
+            meta,
+        )
+
+    # -- status ----------------------------------------------------------------------------
+
+    @tool(LOCAL)
+    async def ping() -> Envelope:
+        """Server health and settings: version, backend, connection settings and safety switches.
+
+        Does not contact any device; use get_connection_status to check the backend.
+        """
+        return ok(
+            "ping",
+            {
+                "server": "profinet-mcp",
+                "version": __version__,
+                "backend": client.backend_name,
+                "connection": client.connection_status(),
+                "writes_enabled": config.writes_enabled,
+                "config_cmds_enabled": config.config_cmds_enabled,
+                "device_aliases": resources.device_map.count(),
+                "device_map_error": resources.device_map.error,
+            },
+            backend_meta(contacted=False),
+        )
+
+    @tool(READ)
+    async def get_connection_status() -> Envelope:
+        """Connection settings plus a reachability check of the backend.
+
+        Mock backend: opens and closes a TCP connection to the mock (reachable true/false). Network
+        backend: not checked (reachable null) - run discover_devices instead. No backend: reachable null.
+        """
+        status = client.connection_status()
+        probe = await client.probe()
+        status.update(reachable=probe.get("reachable"), detail=probe.get("detail"))
+        return ok("get_connection_status", status, backend_meta())
