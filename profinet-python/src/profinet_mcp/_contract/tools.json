@@ -1,0 +1,1233 @@
+{
+  "schemaVersion": 1,
+  "protocol": "profinet",
+  "transport": "stdio",
+  "tools": [
+    {
+      "name": "read_io_data",
+      "description": "Select one target mode and provide only its parameters.\n\naddress: Read I/O data from a slot/subslot of a device; returns raw_data_hex and the byte values.\n\n        Supported by the mock backend. The network backend returns success=false: cyclic PROFINET IO\n        needs an IO controller with an application relationship, which this server does not have.\n        \n\nalias: read_io_data for the device, slot, subslot and length behind an alias from DEVICE_MAP_FILE.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "device_name": {
+            "description": "Station name (NameOfStation) of the device, e.g. line1-io",
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Device Name",
+            "type": "string"
+          },
+          "slot": {
+            "description": "Slot number (slot 0 is the device access point)",
+            "maximum": 32767,
+            "minimum": 0,
+            "title": "Slot",
+            "type": "integer"
+          },
+          "subslot": {
+            "description": "Subslot number, usually 1",
+            "maximum": 65535,
+            "minimum": 1,
+            "title": "Subslot",
+            "type": "integer"
+          },
+          "data_length": {
+            "description": "Bytes to read (1-1440)",
+            "maximum": 1440,
+            "minimum": 1,
+            "title": "Data Length",
+            "type": "integer"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "const": "address",
+                "type": "string"
+              },
+              {
+                "const": "alias",
+                "type": "string"
+              }
+            ],
+            "description": "Select the target mode described above."
+          },
+          "alias": {
+            "description": "Alias defined in DEVICE_MAP_FILE",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Alias",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "oneOf": [
+          {
+            "properties": {
+              "device_name": {
+                "description": "Station name (NameOfStation) of the device, e.g. line1-io",
+                "maxLength": 240,
+                "minLength": 1,
+                "title": "Device Name",
+                "type": "string"
+              },
+              "slot": {
+                "description": "Slot number (slot 0 is the device access point)",
+                "maximum": 32767,
+                "minimum": 0,
+                "title": "Slot",
+                "type": "integer"
+              },
+              "subslot": {
+                "description": "Subslot number, usually 1",
+                "maximum": 65535,
+                "minimum": 1,
+                "title": "Subslot",
+                "type": "integer"
+              },
+              "data_length": {
+                "description": "Bytes to read (1-1440)",
+                "maximum": 1440,
+                "minimum": 1,
+                "title": "Data Length",
+                "type": "integer"
+              },
+              "target": {
+                "const": "address",
+                "type": "string"
+              }
+            },
+            "required": [
+              "device_name",
+              "slot",
+              "subslot",
+              "data_length",
+              "target"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          },
+          {
+            "properties": {
+              "alias": {
+                "description": "Alias defined in DEVICE_MAP_FILE",
+                "maxLength": 200,
+                "minLength": 1,
+                "title": "Alias",
+                "type": "string"
+              },
+              "target": {
+                "const": "alias",
+                "type": "string"
+              }
+            },
+            "required": [
+              "alias",
+              "target"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "write_io_data",
+      "description": "Select one target mode and provide only its parameters.\n\naddress: Write bytes to an output slot/subslot of a device. This changes physical outputs.\n\n        Refused unless PROFINET_WRITES_ENABLED=true (the server is read-only by default). Supported by\n        the mock backend; the network backend returns success=false without sending anything.\n        \n\nalias: write_io_data for the device, slot and subslot behind an alias from DEVICE_MAP_FILE.\n\n        Refused unless PROFINET_WRITES_ENABLED=true, like write_io_data.\n        ",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "device_name": {
+            "description": "Station name (NameOfStation) of the device, e.g. line1-io",
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Device Name",
+            "type": "string"
+          },
+          "slot": {
+            "description": "Slot number (slot 0 is the device access point)",
+            "maximum": 32767,
+            "minimum": 0,
+            "title": "Slot",
+            "type": "integer"
+          },
+          "subslot": {
+            "description": "Subslot number, usually 1",
+            "maximum": 65535,
+            "minimum": 1,
+            "title": "Subslot",
+            "type": "integer"
+          },
+          "data": {
+            "description": "Bytes to write, each an integer 0-255",
+            "items": {
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxItems": 1440,
+            "minItems": 1,
+            "title": "Data",
+            "type": "array"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "const": "address",
+                "type": "string"
+              },
+              {
+                "const": "alias",
+                "type": "string"
+              }
+            ],
+            "description": "Select the target mode described above."
+          },
+          "alias": {
+            "description": "Alias defined in DEVICE_MAP_FILE",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Alias",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target"
+        ],
+        "oneOf": [
+          {
+            "properties": {
+              "device_name": {
+                "description": "Station name (NameOfStation) of the device, e.g. line1-io",
+                "maxLength": 240,
+                "minLength": 1,
+                "title": "Device Name",
+                "type": "string"
+              },
+              "slot": {
+                "description": "Slot number (slot 0 is the device access point)",
+                "maximum": 32767,
+                "minimum": 0,
+                "title": "Slot",
+                "type": "integer"
+              },
+              "subslot": {
+                "description": "Subslot number, usually 1",
+                "maximum": 65535,
+                "minimum": 1,
+                "title": "Subslot",
+                "type": "integer"
+              },
+              "data": {
+                "description": "Bytes to write, each an integer 0-255",
+                "items": {
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "maxItems": 1440,
+                "minItems": 1,
+                "title": "Data",
+                "type": "array"
+              },
+              "target": {
+                "const": "address",
+                "type": "string"
+              }
+            },
+            "required": [
+              "device_name",
+              "slot",
+              "subslot",
+              "data",
+              "target"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          },
+          {
+            "properties": {
+              "alias": {
+                "description": "Alias defined in DEVICE_MAP_FILE",
+                "maxLength": 200,
+                "minLength": 1,
+                "title": "Alias",
+                "type": "string"
+              },
+              "data": {
+                "description": "Bytes to write, each an integer 0-255",
+                "items": {
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "maxItems": 1440,
+                "minItems": 1,
+                "title": "Data",
+                "type": "array"
+              },
+              "target": {
+                "const": "alias",
+                "type": "string"
+              }
+            },
+            "required": [
+              "alias",
+              "data",
+              "target"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          }
+        ]
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "discover_devices",
+      "description": "Discover PROFINET IO devices.\n\n        Network backend: multicasts a DCP Identify All request on PROFINET_INTERFACE and lists every\n        device that answers within `timeout` seconds (needs raw-socket privileges). Mock backend: lists\n        the devices simulated by profinet-mock-server. Each device reports device_name, mac_address,\n        ip_address, subnet_mask, gateway, vendor_id, device_id, device_type and type_of_station where\n        known (null otherwise). meta.backend says which backend answered.\n        ",
+      "inputSchema": {
+        "properties": {
+          "timeout": {
+            "anyOf": [
+              {
+                "maximum": 60,
+                "minimum": 0.5,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Seconds to wait for answers, 0.5-60 (default: PROFINET_DCP_TIMEOUT, 5)",
+            "title": "Timeout"
+          }
+        },
+        "title": "discover_devicesArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "get_device_info",
+      "description": "Discovery details for one device, looked up by station name, IP address or MAC address.\n\n        Runs discovery (see discover_devices) and returns the matching device, or success=false if no\n        device with that name or address answered.\n        ",
+      "inputSchema": {
+        "properties": {
+          "device_name": {
+            "description": "Station name, IP address or MAC address of the device",
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Device Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_name"
+        ],
+        "title": "get_device_infoArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "identify_device",
+      "description": "Make a device flash its identification LED (DCP Set Signal) so it can be found in the cabinet.\n\n        A DCP configuration command: refused unless both PROFINET_WRITES_ENABLED=true and\n        PROFINET_CONFIG_CMDS_ENABLED=true, like set_device_name. Supported by the mock backend. The\n        network backend does not implement DCP Set and returns success=false without sending anything.\n        ",
+      "inputSchema": {
+        "properties": {
+          "device_mac": {
+            "description": "MAC address, e.g. 00:11:22:33:44:55",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Device Mac",
+            "type": "string"
+          },
+          "duration_s": {
+            "default": 5,
+            "description": "How long the device should flash, in seconds",
+            "maximum": 600,
+            "minimum": 1,
+            "title": "Duration S",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "device_mac"
+        ],
+        "title": "identify_deviceArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "set_device_name",
+      "description": "Assign a new station name (DCP Set NameOfStation) to the device with this MAC address.\n\n        Refused unless both PROFINET_WRITES_ENABLED=true and PROFINET_CONFIG_CMDS_ENABLED=true:\n        renaming a device in a running plant takes it away from the IO controller that expects it.\n        The name must follow the PROFINET rules (lowercase a-z, 0-9, '-', dot-separated labels of\n        1-63 characters, at most 240 in total). Supported by the mock backend; the network backend\n        returns success=false without sending anything.\n        ",
+      "inputSchema": {
+        "properties": {
+          "device_mac": {
+            "description": "MAC address, e.g. 00:11:22:33:44:55",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Device Mac",
+            "type": "string"
+          },
+          "name": {
+            "description": "New station name: lowercase a-z, 0-9, '-' and '.'",
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "device_mac",
+          "name"
+        ],
+        "title": "set_device_nameArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "set_device_ip",
+      "description": "Assign IP address, subnet mask and gateway (DCP Set IP) to the device with this MAC address.\n\n        Refused unless both PROFINET_WRITES_ENABLED=true and PROFINET_CONFIG_CMDS_ENABLED=true. The\n        gateway, if given, must be inside the subnet. Supported by the mock backend; the network\n        backend returns success=false without sending anything.\n        ",
+      "inputSchema": {
+        "properties": {
+          "device_mac": {
+            "description": "MAC address, e.g. 00:11:22:33:44:55",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Device Mac",
+            "type": "string"
+          },
+          "ip_address": {
+            "description": "IPv4 address, e.g. 192.168.1.20",
+            "maxLength": 15,
+            "minLength": 7,
+            "title": "Ip Address",
+            "type": "string"
+          },
+          "subnet_mask": {
+            "description": "IPv4 address, e.g. 192.168.1.20",
+            "maxLength": 15,
+            "minLength": 7,
+            "title": "Subnet Mask",
+            "type": "string"
+          },
+          "gateway": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Default gateway; omit or 0.0.0.0 for none",
+            "title": "Gateway"
+          }
+        },
+        "required": [
+          "device_mac",
+          "ip_address",
+          "subnet_mask"
+        ],
+        "title": "set_device_ipArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": true
+      }
+    },
+    {
+      "name": "list_devices",
+      "description": "List the aliases defined in DEVICE_MAP_FILE (device name, address, slot, subslot, length).\n\n        Reads only the local file; no device is contacted.\n        ",
+      "inputSchema": {
+        "properties": {},
+        "title": "list_devicesArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "load_gsd_file",
+      "description": "Parse a GSDML device description file: device identity, access points and modules.\n\n        Returns metadata (vendor, vendor/device IDs, device name, GSDML version), the device access\n        points with their usable modules, every module with its fixed submodules and its pluggable\n        submodules (resolved from the SubmoduleList; unresolved references are flagged and the module\n        gets submodules_incomplete=true), and input/output sizes in bytes (null when a data type's size\n        is unknown). Relative paths are also looked up in\n        PROFINET_GSD_PATH. Files are cached and re-parsed when they change on disk.\n        ",
+      "inputSchema": {
+        "properties": {
+          "filepath": {
+            "description": "Path of a GSDML (.xml) file",
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Filepath",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filepath"
+        ],
+        "title": "load_gsd_fileArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "ping",
+      "description": "Server health and settings: version, backend, connection settings and safety switches.\n\n        Does not contact any device; use get_connection_status to check the backend.\n        ",
+      "inputSchema": {
+        "properties": {},
+        "title": "pingArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_connection_status",
+      "description": "Connection settings plus a reachability check of the backend.\n\n        Mock backend: opens and closes a TCP connection to the mock (reachable true/false). Network\n        backend: not checked (reachable null) - run discover_devices instead. No backend: reachable null.\n        ",
+      "inputSchema": {
+        "properties": {},
+        "title": "get_connection_statusArguments",
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "success",
+          "data",
+          "error",
+          "meta"
+        ],
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {},
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "meta": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "openWorldHint": true
+      }
+    }
+  ],
+  "routes": {
+    "read_io_data": {
+      "selector": "target",
+      "options": {
+        "address": "read_io_data",
+        "alias": "read_device_by_alias"
+      },
+      "legacyHandler": "read_io_data"
+    },
+    "write_io_data": {
+      "selector": "target",
+      "options": {
+        "address": "write_io_data",
+        "alias": "write_device_by_alias"
+      },
+      "legacyHandler": "write_io_data"
+    },
+    "discover_devices": {
+      "handler": "discover_devices"
+    },
+    "get_device_info": {
+      "handler": "get_device_info"
+    },
+    "identify_device": {
+      "handler": "identify_device"
+    },
+    "set_device_name": {
+      "handler": "set_device_name"
+    },
+    "set_device_ip": {
+      "handler": "set_device_ip"
+    },
+    "list_devices": {
+      "handler": "list_devices"
+    },
+    "load_gsd_file": {
+      "handler": "load_gsd_file"
+    },
+    "ping": {
+      "handler": "ping"
+    },
+    "get_connection_status": {
+      "handler": "get_connection_status"
+    }
+  },
+  "legacy": {
+    "read_io_data": "read_io_data",
+    "read_device_by_alias": "read_io_data",
+    "write_io_data": "write_io_data",
+    "write_device_by_alias": "write_io_data",
+    "discover_devices": "discover_devices",
+    "get_device_info": "get_device_info",
+    "test_device_communication": "get_device_info",
+    "identify_device": "identify_device",
+    "set_device_name": "set_device_name",
+    "set_device_ip": "set_device_ip",
+    "list_devices": "list_devices",
+    "load_gsd_file": "load_gsd_file",
+    "ping": "ping",
+    "get_connection_status": "get_connection_status"
+  },
+  "legacySchemas": {
+    "discover_devices": {
+      "properties": {
+        "timeout": {
+          "anyOf": [
+            {
+              "maximum": 60,
+              "minimum": 0.5,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Seconds to wait for answers, 0.5-60 (default: PROFINET_DCP_TIMEOUT, 5)",
+          "title": "Timeout"
+        }
+      },
+      "title": "discover_devicesArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "get_device_info": {
+      "properties": {
+        "device_name": {
+          "description": "Station name, IP address or MAC address of the device",
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Device Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_name"
+      ],
+      "title": "get_device_infoArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "test_device_communication": {
+      "properties": {
+        "device_name": {
+          "description": "Station name, IP address or MAC address of the device",
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Device Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_name"
+      ],
+      "title": "test_device_communicationArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "identify_device": {
+      "properties": {
+        "device_mac": {
+          "description": "MAC address, e.g. 00:11:22:33:44:55",
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Device Mac",
+          "type": "string"
+        },
+        "duration_s": {
+          "default": 5,
+          "description": "How long the device should flash, in seconds",
+          "maximum": 600,
+          "minimum": 1,
+          "title": "Duration S",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "device_mac"
+      ],
+      "title": "identify_deviceArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "set_device_name": {
+      "properties": {
+        "device_mac": {
+          "description": "MAC address, e.g. 00:11:22:33:44:55",
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Device Mac",
+          "type": "string"
+        },
+        "name": {
+          "description": "New station name: lowercase a-z, 0-9, '-' and '.'",
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "device_mac",
+        "name"
+      ],
+      "title": "set_device_nameArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "set_device_ip": {
+      "properties": {
+        "device_mac": {
+          "description": "MAC address, e.g. 00:11:22:33:44:55",
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Device Mac",
+          "type": "string"
+        },
+        "ip_address": {
+          "description": "IPv4 address, e.g. 192.168.1.20",
+          "maxLength": 15,
+          "minLength": 7,
+          "title": "Ip Address",
+          "type": "string"
+        },
+        "subnet_mask": {
+          "description": "IPv4 address, e.g. 192.168.1.20",
+          "maxLength": 15,
+          "minLength": 7,
+          "title": "Subnet Mask",
+          "type": "string"
+        },
+        "gateway": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Default gateway; omit or 0.0.0.0 for none",
+          "title": "Gateway"
+        }
+      },
+      "required": [
+        "device_mac",
+        "ip_address",
+        "subnet_mask"
+      ],
+      "title": "set_device_ipArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "read_io_data": {
+      "properties": {
+        "device_name": {
+          "description": "Station name (NameOfStation) of the device, e.g. line1-io",
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Device Name",
+          "type": "string"
+        },
+        "slot": {
+          "description": "Slot number (slot 0 is the device access point)",
+          "maximum": 32767,
+          "minimum": 0,
+          "title": "Slot",
+          "type": "integer"
+        },
+        "subslot": {
+          "description": "Subslot number, usually 1",
+          "maximum": 65535,
+          "minimum": 1,
+          "title": "Subslot",
+          "type": "integer"
+        },
+        "data_length": {
+          "description": "Bytes to read (1-1440)",
+          "maximum": 1440,
+          "minimum": 1,
+          "title": "Data Length",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "device_name",
+        "slot",
+        "subslot",
+        "data_length"
+      ],
+      "title": "read_io_dataArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "write_io_data": {
+      "properties": {
+        "device_name": {
+          "description": "Station name (NameOfStation) of the device, e.g. line1-io",
+          "maxLength": 240,
+          "minLength": 1,
+          "title": "Device Name",
+          "type": "string"
+        },
+        "slot": {
+          "description": "Slot number (slot 0 is the device access point)",
+          "maximum": 32767,
+          "minimum": 0,
+          "title": "Slot",
+          "type": "integer"
+        },
+        "subslot": {
+          "description": "Subslot number, usually 1",
+          "maximum": 65535,
+          "minimum": 1,
+          "title": "Subslot",
+          "type": "integer"
+        },
+        "data": {
+          "description": "Bytes to write, each an integer 0-255",
+          "items": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 1440,
+          "minItems": 1,
+          "title": "Data",
+          "type": "array"
+        }
+      },
+      "required": [
+        "device_name",
+        "slot",
+        "subslot",
+        "data"
+      ],
+      "title": "write_io_dataArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "list_devices": {
+      "properties": {},
+      "title": "list_devicesArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "read_device_by_alias": {
+      "properties": {
+        "alias": {
+          "description": "Alias defined in DEVICE_MAP_FILE",
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Alias",
+          "type": "string"
+        }
+      },
+      "required": [
+        "alias"
+      ],
+      "title": "read_device_by_aliasArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "write_device_by_alias": {
+      "properties": {
+        "alias": {
+          "description": "Alias defined in DEVICE_MAP_FILE",
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Alias",
+          "type": "string"
+        },
+        "data": {
+          "description": "Bytes to write, each an integer 0-255",
+          "items": {
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 1440,
+          "minItems": 1,
+          "title": "Data",
+          "type": "array"
+        }
+      },
+      "required": [
+        "alias",
+        "data"
+      ],
+      "title": "write_device_by_aliasArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "load_gsd_file": {
+      "properties": {
+        "filepath": {
+          "description": "Path of a GSDML (.xml) file",
+          "maxLength": 4096,
+          "minLength": 1,
+          "title": "Filepath",
+          "type": "string"
+        }
+      },
+      "required": [
+        "filepath"
+      ],
+      "title": "load_gsd_fileArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "ping": {
+      "properties": {},
+      "title": "pingArguments",
+      "type": "object",
+      "additionalProperties": false
+    },
+    "get_connection_status": {
+      "properties": {},
+      "title": "get_connection_statusArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  "resultSchema": {
+    "type": "object",
+    "required": [
+      "success",
+      "data",
+      "error",
+      "meta"
+    ],
+    "properties": {
+      "success": {
+        "type": "boolean"
+      },
+      "data": {},
+      "error": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "meta": {
+        "type": "object"
+      }
+    },
+    "additionalProperties": false
+  },
+  "localStatusTools": [
+    "ping"
+  ]
+}

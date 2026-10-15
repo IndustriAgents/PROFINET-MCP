@@ -20,7 +20,7 @@ log = logging.getLogger("profinet_mcp")
 
 #: The installed package directory (``.../src/profinet_mcp`` in a source checkout).
 PACKAGE_DIR = Path(__file__).resolve().parent
-PROJECT_NAME = "profinet-mcp"
+PROJECT_NAME = "industriagents-profinet-mcp"
 #: Variables an implicit .env may set besides PROFINET_* (rule 3b: only the server's own settings).
 OWN_EXTRAS = frozenset({"DEVICE_MAP_FILE"})
 

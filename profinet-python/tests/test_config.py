@@ -48,7 +48,7 @@ def isolated_env(monkeypatch, tmp_path):
     project = tmp_path / "checkout" / "profinet-python"
     package = project / "src" / "profinet_mcp"
     package.mkdir(parents=True)
-    (project / "pyproject.toml").write_text('[project]\nname = "profinet-mcp"\n')
+    (project / "pyproject.toml").write_text('[project]\nname = "industriagents-profinet-mcp"\n')
     monkeypatch.setattr(cli, "PACKAGE_DIR", package)
     cwd = tmp_path / "client-project" / "sub"
     cwd.mkdir(parents=True)
@@ -201,7 +201,7 @@ def test_installed_package_has_no_implicit_dotenv(tmp_path, layout: str) -> None
     package.mkdir(parents=True)
     project = package.parent if layout == "flat" else package.parent.parent
     (project / ".env").write_text("PROFINET_BACKEND=mock\n")
-    (project / "pyproject.toml").write_text('[project]\nname = "profinet-mcp"\n')
+    (project / "pyproject.toml").write_text('[project]\nname = "industriagents-profinet-mcp"\n')
     assert cli.project_dir(package) is None and cli.project_dotenv(package) is None
 
 

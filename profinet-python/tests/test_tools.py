@@ -22,19 +22,16 @@ pytestmark = pytest.mark.anyio
 
 EXPECTED_TOOLS = {
     "discover_devices",
-    "get_device_info",
-    "set_device_name",
-    "set_device_ip",
-    "identify_device",
-    "read_io_data",
-    "write_io_data",
     "load_gsd_file",
-    "list_devices",
-    "read_device_by_alias",
-    "write_device_by_alias",
-    "ping",
+    "read_io_data",
     "get_connection_status",
-    "test_device_communication",
+    "get_device_info",
+    "list_devices",
+    "write_io_data",
+    "set_device_name",
+    "identify_device",
+    "ping",
+    "set_device_ip",
 }
 MAC = "00:11:22:33:44:55"
 DEVICE = {"device_name": "line1-io", "mac_address": MAC, "ip_address": "192.168.1.100"}

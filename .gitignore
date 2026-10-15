@@ -21,3 +21,8 @@ Thumbs.db
 # Misc
 *.tmp
 *.lock.bak
+
+# Release artifacts
+npm/vendor/*.whl
+npm/*.tgz
+dist/

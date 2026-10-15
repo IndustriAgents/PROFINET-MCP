@@ -28,19 +28,16 @@ pytestmark = [pytest.mark.anyio, pytest.mark.integration]
 
 EXPECTED_TOOLS = {
     "discover_devices",
-    "get_device_info",
-    "set_device_name",
-    "set_device_ip",
-    "identify_device",
-    "read_io_data",
-    "write_io_data",
     "load_gsd_file",
-    "list_devices",
-    "read_device_by_alias",
-    "write_device_by_alias",
-    "ping",
+    "read_io_data",
     "get_connection_status",
-    "test_device_communication",
+    "get_device_info",
+    "list_devices",
+    "write_io_data",
+    "set_device_name",
+    "identify_device",
+    "ping",
+    "set_device_ip",
 }
 
 MAC = "00:11:22:33:44:55"
@@ -69,7 +66,9 @@ async def mcp_session(cwd: Path, **env: str) -> AsyncIterator[tuple[ClientSessio
 
 async def call(session: ClientSession, tool: str, **arguments: Any) -> dict[str, Any]:
     result = await session.call_tool(tool, arguments)
-    assert not result.isError, result  # failures are envelopes, never protocol errors
+    assert result.isError is (json.loads(result.content[0].text).get("success") is False), (
+        result
+    )  # failures are envelopes, never protocol errors
     envelope = json.loads(result.content[0].text)
     assert result.structuredContent == envelope
     assert set(envelope) == {"success", "data", "error", "meta"}
@@ -98,10 +97,10 @@ async def test_every_tool_against_the_mock(tmp_path: Path, mock_process: MockPro
             DEVICE_MAP_FILE=str(device_map),
         ) as (session, init):
             assert init.serverInfo.name == "PROFINET MCP Server"
-            assert init.serverInfo.version == version("profinet-mcp")
+            assert init.serverInfo.version == version("industriagents-profinet-mcp")
 
             tools = (await session.list_tools()).tools
-            assert len(tools) == 14
+            assert len(tools) == 11
             assert all(tool.description for tool in tools)
 
             ping = await call(session, "ping")
@@ -277,7 +276,22 @@ def test_stdout_carries_only_json_rpc(tmp_path: Path, mock_process: MockProcess,
     }
     server = RawServer(tmp_path, **env)
     calls = every_tool_call(device_map)
-    assert {name for name, _ in calls} == EXPECTED_TOOLS
+    assert {name for name, _ in calls} == {
+        "test_device_communication",
+        "write_device_by_alias",
+        "read_io_data",
+        "get_connection_status",
+        "discover_devices",
+        "set_device_name",
+        "write_io_data",
+        "read_device_by_alias",
+        "list_devices",
+        "identify_device",
+        "load_gsd_file",
+        "ping",
+        "get_device_info",
+        "set_device_ip",
+    }
     results: dict[str, dict] = {}
     try:
         init = server.request(
@@ -285,12 +299,14 @@ def test_stdout_carries_only_json_rpc(tmp_path: Path, mock_process: MockProcess,
             "initialize",
             {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "pytest", "version": "0"}},
         )
-        assert init["result"]["serverInfo"]["version"] == version("profinet-mcp")
+        assert init["result"]["serverInfo"]["version"] == version("industriagents-profinet-mcp")
         server.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        assert len(server.request(2, "tools/list")["result"]["tools"]) == 14
+        assert len(server.request(2, "tools/list")["result"]["tools"]) == 11
         for offset, (name, arguments) in enumerate(calls, start=3):
             response = server.request(offset, "tools/call", {"name": name, "arguments": arguments})
-            assert response["result"]["isError"] is False, response
+            assert response["result"]["isError"] is (response["result"]["structuredContent"]["success"] is False), (
+                response
+            )
             results[name] = json.loads(response["result"]["content"][0]["text"])
             assert results[name]["meta"]["tool"] == name
     finally:
