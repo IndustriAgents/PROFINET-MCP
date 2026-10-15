@@ -33,8 +33,8 @@ Rebuilding can change archive hashes; these identify the verified files.
 
 | Artifact | SHA-256 |
 |---|---|
-| `industriagents_profinet_mcp-0.3.0-py3-none-any.whl` | `6f88eee7a5348d0435b805df85fc5dda381b481affe7a258ff91e83be38c789f` |
-| `industriagents_profinet_mcp-0.3.0.tar.gz` | `33bf8b5ba71fa19f609b886f46e95e00c39a836956e17e68570ff771dffbf7e9` |
-| `industriagents-profinet-mcp-0.3.0.tgz` | `5c0af682cfef4167a3f3e8e497a473899a844fe14048f1047b80318ad082464f` |
+| `industriagents_profinet_mcp-0.3.0-py3-none-any.whl` | `d134594289a5bf46f7d892977f756b7399639012273116d2058eec00fb2b3595` |
+| `industriagents_profinet_mcp-0.3.0.tar.gz` | `dee869c75896daf1a590918c590f29f035e1c686e4a288bcca7d171356a29b82` |
+| `industriagents-profinet-mcp-0.3.0.tgz` | `5f98b47a18ce30de10838242808ab3dfae728538e74a2d4c1a915a300e3ce414` |
 
 See [release instructions](release.md) for independent registry publication.

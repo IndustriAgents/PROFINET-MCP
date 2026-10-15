@@ -101,7 +101,6 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         return wrapper
 
     def tool(annotations: ToolAnnotations) -> Callable[[Callable[..., Awaitable[Envelope]]], Any]:
-
         def decorate(fn: Callable[..., Awaitable[Envelope]]) -> Any:
             return server.tool(annotations=annotations)(guarded(fn))
 
