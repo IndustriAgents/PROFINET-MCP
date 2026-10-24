@@ -348,6 +348,28 @@ async def test_failed_discovery_does_not_count_against_the_rate_limit() -> None:
             await backend.discover(0.5)
 
 
+@pytest.mark.parametrize("sent", [True, None])
+async def test_capture_failure_after_possible_send_preserves_discovery_rate_limit(sent) -> None:
+    class BrokenCapture(FakeTransport):
+        def exchange(self, frame, timeout, accept):
+            self.sent.append(frame)
+            raise dcp.DcpError("capture failed after Identify", request_sent=sent)
+
+    now = [5.0]
+    transport = BrokenCapture([])
+    backend = NetworkBackend("fake0", transport=transport, clock=lambda: now[0])
+    with pytest.raises(ProfinetClientError, match="capture failed"):
+        await backend.discover(0.5)
+    for cached in (False, True):
+        with pytest.raises(RateLimited):
+            await backend.discover(0.5, allow_cached=cached)
+    assert len(transport.sent) == 1
+    now[0] += backend.min_interval
+    with pytest.raises(ProfinetClientError, match="capture failed"):
+        await backend.discover(0.5)
+    assert len(transport.sent) == 2
+
+
 async def test_network_backend_discovers_with_dcp(monkeypatch) -> None:
     backend = NetworkBackend("fake0", transport=FakeTransport([identify_response(xid=XID)]))
     monkeypatch.setattr(dcp.random, "getrandbits", lambda bits: XID)

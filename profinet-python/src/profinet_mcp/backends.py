@@ -25,6 +25,8 @@ from anyio.streams.buffered import BufferedByteReceiveStream
 
 from . import dcp
 from .config import BACKEND_MOCK, BACKEND_NETWORK, BACKEND_NONE, ProfinetConfig
+from .domain.errors import OperationRefused as OperationRefused
+from .domain.errors import ProfinetClientError as ProfinetClientError
 
 MAX_RESPONSE_BYTES = 1024 * 1024
 
@@ -100,20 +102,12 @@ DEVICE_FIELDS = (
 )
 
 
-class ProfinetClientError(RuntimeError):
-    """A PROFINET operation failed; the message is shown to the model."""
-
-
 class OperationNotImplemented(ProfinetClientError):
     """The selected backend cannot do this (yet)."""
 
 
 class BackendNotConfigured(ProfinetClientError):
     """``PROFINET_BACKEND`` is unset or ``none``."""
-
-
-class OperationRefused(ProfinetClientError):
-    """Refused by a safety switch (writes or configuration commands disabled), or rate-limited."""
 
 
 class RateLimited(OperationRefused):
@@ -599,7 +593,10 @@ class NetworkBackend:
                 dcp.identify_all, self.transport, timeout, abandon_on_cancel=True
             )
         except dcp.DcpError as exc:
-            self._last_identify = previous  # the request did not go out (or the capture failed)
+            if exc.request_sent is False:
+                self._last_identify = previous
+            # A capture failure can follow a transmitted Identify frame. Keep
+            # its rate-limit reservation unless nothing was provably sent.
             raise ProfinetClientError(str(exc)) from exc
         info = {**info, "timeout_s": timeout}
         self._last_result = (now, self._clock(), copy.deepcopy(devices), info)

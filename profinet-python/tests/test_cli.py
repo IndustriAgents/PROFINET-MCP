@@ -76,3 +76,29 @@ def test_working_directory_dotenv_is_not_read_in_a_real_launch(tmp_path) -> None
     assert f"not reading {tmp_path / '.env'}" in result.stderr or "not reading" in result.stderr
     assert "backend=none" in result.stderr and "writes disabled" in result.stderr
     assert result.stdout == ""
+
+
+@pytest.mark.parametrize("policy_content", ['{"read_only": "no"}', None])
+def test_invalid_policy_file_is_a_clean_configuration_error(tmp_path, policy_content):
+    import os
+    import subprocess
+    import sys
+
+    policy = tmp_path / "policy.json"
+    if policy_content is not None:
+        policy.write_text(policy_content)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PROFINET_")}
+    env.update({"PROFINET_BACKEND": "none", "PROFINET_POLICY_FILE": str(policy)})
+    result = subprocess.run(
+        [sys.executable, "-m", "profinet_mcp.cli"],
+        cwd=tmp_path,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "configuration error" in result.stderr
+    assert "Traceback" not in result.stderr

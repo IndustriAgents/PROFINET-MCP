@@ -5,8 +5,7 @@ from typing import Annotated, Any
 from pydantic import Field
 
 from profinet_mcp import validation
-from profinet_mcp.backends import OperationRefused
-from profinet_mcp.domain.errors import WRITES_DISABLED, config_cmds_refusal
+from profinet_mcp.domain.errors import WRITES_DISABLED, OperationRefused, config_cmds_refusal
 from profinet_mcp.domain.model import (
     Alias,
     ByteValues,

@@ -280,14 +280,29 @@ def test_capture_permission_errors_are_explained(monkeypatch, error) -> None:
         fail_with = error
 
     transport = dcp.ScapyL2Transport("eth0", scapy=FakeScapy(sniffer_cls=Sniffer))
-    with pytest.raises(dcp.DcpPermissionError, match="CAP_NET_RAW"):
+    with pytest.raises(dcp.DcpPermissionError, match="CAP_NET_RAW") as caught:
         dcp.identify_all(transport, timeout=0.01, xid=XID)
+    assert caught.value.request_sent is False
 
 
 def test_send_failure_is_reported(monkeypatch) -> None:
     transport = dcp.ScapyL2Transport("eth0", scapy=FakeScapy(send_error=OSError(errno.ENETDOWN, "Network is down")))
-    with pytest.raises(dcp.DcpError, match="Network is down"):
+    with pytest.raises(dcp.DcpError, match="Network is down") as caught:
         dcp.identify_all(transport, timeout=0.01, xid=XID)
+    assert caught.value.request_sent is None
+
+
+def test_capture_failure_after_send_retains_send_evidence():
+    class Sniffer(FakeSniffer):
+        def stop(self):
+            raise OSError("capture failed")
+
+    api = FakeScapy(sniffer_cls=Sniffer)
+    transport = dcp.ScapyL2Transport("eth0", scapy=api)
+    with pytest.raises(dcp.DcpError, match="capture failed") as caught:
+        dcp.identify_all(transport, timeout=0.01, xid=XID)
+    assert caught.value.request_sent is True
+    assert len(api.sent) == 1
 
 
 def test_unknown_interface_is_reported() -> None:

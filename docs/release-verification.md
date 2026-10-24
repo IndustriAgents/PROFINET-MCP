@@ -1,40 +1,46 @@
 # 0.3.0 local release verification
 
-Verified on 2026-10-15. Package: `industriagents-profinet-mcp`.
+Reverified on 2026-10-24 after the architecture cross-review.
+Package: `industriagents-profinet-mcp`.
 
-This records local build verification, not registry publication. Check the
-GitHub Actions runs and registry version pages for publication status. Registry
-authentication/trusted publishers must be configured before release; GitHub
-repository access alone does not authorize registry publication.
+These are local build and installed-artifact results, not a registry release.
+No tag, commit, push or publication was performed by this verification.
 
 ## Checks
 
-- Full Python regression run: 339 passed, 1 skipped.
-- Final architecture/contract tests: 15 passed (a separate run, not additional unique tests).
+- Full server regression suite: 369 passed, 1 skipped.
+- Separate mock suite: 62 passed.
+- The full suite includes the final native outcome/configuration regressions and
+  the shared audit and policy-file tests; no additional focused runs are added
+  to the counts above.
 - Ruff lint and formatting checks passed for source and tests.
-- `uv lock --check` and contract/package version parity passed.
+- `uv lock --check` and contract/package-version checks passed.
 - Three npm launcher tests passed.
-- Installed wheel and installed npm tarball both initialized over stdio outside
-  the checkout, reported version 0.3.0 and listed 11 canonical tools.
-  Their schemas matched the contract; invalid mode calls returned MCP errors.
-- `twine check --strict` passed for the wheel and source distribution.
-- The npm tarball contains exactly the same wheel bytes as the PyPI artifact.
+- Fresh wheel, source distribution and npm tarball built successfully.
+- Both installed distribution routes initialized over stdio outside the source
+  checkout and listed 11 canonical tools with the exact reviewed schemas.
+  Invalid mode calls returned MCP error envelopes. Smoke tests selected the
+  exact manifest-version artifact filenames.
+- `twine check --strict` passed for wheel and source distribution.
+- Artifact inspection confirmed current packaged sources/contracts, matching
+  npm launcher bytes, and identical wheel bytes inside the npm archive.
 - `git diff --check` passed.
 
-Skipped test: The local libxml2 build cannot fetch HTTP resources.
+Skipped tests: The optional libxml2 HTTP-fetch test is skipped because this build has no HTTP client.
 
-These are software and mock/loopback checks, not physical-device certification.
-See [protocol capability limits](architecture.md#protocol-capability-limits).
+The native checks use mock devices, loopback peers or fake driver APIs.
+They do not certify physical hardware or add unsupported live operations.
+See [architecture and protocol capability limits](architecture.md).
 
 ## Artifact SHA-256
 
-Artifacts are local build outputs in `dist/` and `npm/`, excluded from Git.
-Rebuilding can change archive hashes; these identify the verified files.
+The following artifacts are in `dist/` and `npm/`, excluded from Git.
+These hashes identify the exact verified outputs; rebuilding can change them.
 
 | Artifact | SHA-256 |
 |---|---|
-| `industriagents_profinet_mcp-0.3.0-py3-none-any.whl` | `d134594289a5bf46f7d892977f756b7399639012273116d2058eec00fb2b3595` |
-| `industriagents_profinet_mcp-0.3.0.tar.gz` | `dee869c75896daf1a590918c590f29f035e1c686e4a288bcca7d171356a29b82` |
-| `industriagents-profinet-mcp-0.3.0.tgz` | `5f98b47a18ce30de10838242808ab3dfae728538e74a2d4c1a915a300e3ce414` |
+| `industriagents_profinet_mcp-0.3.0-py3-none-any.whl` | `bc6fbe31705fbc0167e7ab641721740aa804670897f84fffc7cde63744e9b25b` |
+| `industriagents_profinet_mcp-0.3.0.tar.gz` | `c7927dec662161c22907490f129e8e424c8097215bc8af8b787f35bf2c3c0fd8` |
+| `industriagents-profinet-mcp-0.3.0.tgz` | `270b7bd2ab1086d3af77a2a90894b7f126c1dd6bd79b7c2cbbdf552d65fbf9fa` |
 
 See [release instructions](release.md) for independent registry publication.

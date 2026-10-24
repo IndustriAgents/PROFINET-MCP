@@ -55,6 +55,10 @@ IP_STATUS = {0: "not set", 1: "set", 2: "set by DHCP"}
 class DcpError(RuntimeError):
     """DCP could not be carried out on the interface."""
 
+    def __init__(self, message: str, *, request_sent: bool | None = None) -> None:
+        super().__init__(message)
+        self.request_sent = request_sent
+
 
 class DcpPermissionError(DcpError):
     """The process may not send/capture raw Ethernet frames on the interface."""
@@ -203,7 +207,11 @@ def identify_all(transport: L2Transport, timeout: float, xid: int | None = None)
     """Multicast DCP Identify All and collect the answers for ``timeout`` seconds (blocking)."""
     if xid is None:
         xid = random.getrandbits(32)
-    request = build_identify_all_request(transport.local_mac(), xid)
+    try:
+        request = build_identify_all_request(transport.local_mac(), xid)
+    except DcpError as exc:
+        exc.request_sent = False  # No exchange has started yet.
+        raise
     frames = transport.exchange(request, timeout, lambda frame: is_identify_response(frame, xid))
     devices: dict[str, dict[str, Any]] = {}
     malformed = 0
@@ -238,15 +246,16 @@ def _load_scapy() -> SimpleNamespace:
     return SimpleNamespace(AsyncSniffer=AsyncSniffer, sendp=sendp, Raw=Raw, get_if_hwaddr=get_if_hwaddr)
 
 
-def _wrap_os_error(interface: str, exc: BaseException) -> DcpError:
+def _wrap_os_error(interface: str, exc: BaseException, *, request_sent: bool | None = None) -> DcpError:
     text = str(exc)
     denied = isinstance(exc, PermissionError) or (isinstance(exc, OSError) and exc.errno in (errno.EPERM, errno.EACCES))
     if denied or "permission" in text.lower() or "operation not permitted" in text.lower():
         return DcpPermissionError(
             f"Raw Ethernet access on interface {interface!r} was refused ({text}). DCP discovery needs "
-            "root or CAP_NET_RAW on Linux, or read/write access to /dev/bpf* on macOS."
+            "root or CAP_NET_RAW on Linux, or read/write access to /dev/bpf* on macOS.",
+            request_sent=request_sent,
         )
-    return DcpError(f"DCP on interface {interface!r} failed: {text or type(exc).__name__}")
+    return DcpError(f"DCP on interface {interface!r} failed: {text or type(exc).__name__}", request_sent=request_sent)
 
 
 class ScapyL2Transport:
@@ -298,8 +307,8 @@ class ScapyL2Transport:
             if getattr(sniffer, "running", False):
                 self._stop(sniffer)
             if failure is not None:
-                raise _wrap_os_error(self.interface, failure) from failure
-            raise DcpError(f"Packet capture on interface {self.interface!r} did not start")
+                raise _wrap_os_error(self.interface, failure, request_sent=False) from failure
+            raise DcpError(f"Packet capture on interface {self.interface!r} did not start", request_sent=False)
         try:
             api.sendp(api.Raw(frame), iface=self.interface, verbose=False)
         except Exception as exc:
@@ -309,7 +318,7 @@ class ScapyL2Transport:
         try:
             packets = sniffer.stop()
         except Exception as exc:
-            raise _wrap_os_error(self.interface, exc) from exc
+            raise _wrap_os_error(self.interface, exc, request_sent=True) from exc
         return [raw_bytes(packet) for packet in packets or []]
 
     @staticmethod

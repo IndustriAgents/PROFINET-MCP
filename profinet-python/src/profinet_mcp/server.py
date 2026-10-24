@@ -8,7 +8,6 @@ from typing import Any
 
 import anyio
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.stdio import stdio_server
 from mcp.types import ContentBlock
 from pydantic import ValidationError
@@ -84,13 +83,15 @@ class EnvelopeFastMCP(FastMCP):
                 self.on_client_disconnect()
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> Sequence[ContentBlock] | dict[str, Any]:
-        try:
-            return await super().call_tool(name, arguments)
-        except ToolError as exc:
-            tool = self._tool_manager.get_tool(name)
-            if tool is None or not isinstance(exc.__cause__, ValidationError):
-                raise
-            return tool.fn_metadata.convert_result(invalid_arguments(name, exc.__cause__))
+        tool = self._tool_manager.get_tool(name)
+        if tool is not None:
+            try:
+                # Only validation performed before invocation proves not_sent.
+                # A handler or result validator can fail after native dispatch.
+                tool.fn_metadata.arg_model.model_validate(tool.fn_metadata.pre_parse_json(arguments))
+            except ValidationError as exc:
+                return tool.fn_metadata.convert_result(invalid_arguments(name, exc))
+        return await super().call_tool(name, arguments)
 
 
 class ProfinetMCPServer:

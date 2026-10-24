@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 from profinet_mcp import __version__, validation
-from profinet_mcp.backends import OperationRefused
-from profinet_mcp.domain.errors import config_cmds_refusal
+from profinet_mcp.domain.errors import OperationRefused, config_cmds_refusal
 from profinet_mcp.domain.model import DeviceMac, DeviceRef, Envelope, IdentifySeconds
 
 

@@ -13,7 +13,7 @@ from pathlib import Path
 from dotenv import dotenv_values, load_dotenv
 
 from . import __version__
-from .config import ConfigError, ProfinetConfig
+from .config import ProfinetConfig
 from .server import ProfinetMCPServer
 
 log = logging.getLogger("profinet_mcp")
@@ -158,11 +158,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     # Configuration is read only now, after load_dotenv(), so .env settings apply.
     try:
         config = ProfinetConfig.from_env()
-    except ConfigError as exc:
+        server = ProfinetMCPServer(config)
+    except (ValueError, OSError) as exc:
         print(f"profinet-mcp: configuration error: {exc}", file=sys.stderr)
         raise SystemExit(2) from None
 
-    server = ProfinetMCPServer(config)
     detail = {
         "mock": f" ({config.mock_host}:{config.mock_port})",
         "network": f" (interface {config.interface})",

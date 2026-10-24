@@ -2,6 +2,15 @@ from __future__ import annotations
 
 from ..config import ProfinetConfig
 
+
+class ProfinetClientError(RuntimeError):
+    """A PROFINET operation failed; the message is shown to the model."""
+
+
+class OperationRefused(ProfinetClientError):
+    """Refused by a safety switch (writes or configuration commands disabled), or rate-limited."""
+
+
 WRITES_DISABLED = (
     "Writes are disabled, so nothing was sent. The "
     "server is read-only by default; set "
