@@ -279,8 +279,15 @@ class CifxBackend:
         base = self.map.bit_list_offset + offset
         if not snapshot[base] & mask or not snapshot[base + 16] & mask or snapshot[base + 32] & mask:
             raise RequestNotSent("cifX AR is unconfigured, inactive, or reports diagnosis/configuration difference")
-        # Good bit is bit 7 for PROFINET IOPS / IOCS. Lower bits identify the source.
+        # This commissioned profile allocates exactly one IOxS byte. Bit 0
+        # announces another status byte; bits 1..4 are reserved. Accepting either
+        # would treat an unsupported/malformed status as complete quality.
         status = snapshot[mapping.status_offset]
+        if status & 0x01:
+            raise RequestNotSent("Extended cifX IOPS/IOCS is outside the commissioned single-byte status profile")
+        if status & 0x1E:
+            raise RequestNotSent("cifX IOPS/IOCS has nonzero reserved bits")
+        # Bit 7 means good; bits 5..6 locate the fault only when quality is bad.
         if not status & 0x80:
             raise RequestNotSent("cifX submodule provider/consumer quality is bad or unknown")
         return status

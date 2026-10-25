@@ -185,6 +185,34 @@ async def test_output_quality_refuses_before_native_write(native, key, value):
     assert lib.shim_get(0) == 0
 
 
+@pytest.mark.parametrize("direction", ["input", "output"])
+@pytest.mark.parametrize("extension,reserved", [(1, 0), (0, 1), (0, 2), (0, 4), (0, 8), (1, 15)])
+async def test_good_bit_cannot_override_extended_or_reserved_status(native, direction, extension, reserved):
+    from scapy.contrib.pnio import PNIORealTime_IOxS
+
+    backend, lib = native
+    wire = bytes(PNIORealTime_IOxS(dataState=1, instance=0, reserved=reserved, extension=extension))
+    assert len(wire) == 1
+    lib.shim_set(10 if direction == "input" else 11, wire[0])
+    with pytest.raises(RequestNotSent, match="single-byte|reserved"):
+        if direction == "input":
+            await backend.read_io("line1-io", 1, 1, 2)
+        else:
+            await backend.write_io("line1-io", 1, 1, b"ab")
+    assert lib.shim_get(0) == 0
+
+
+@pytest.mark.parametrize("instance", [0, 1, 2, 3])
+async def test_status_instance_bits_do_not_invent_faults_when_quality_good(native, instance):
+    from scapy.contrib.pnio import PNIORealTime_IOxS
+
+    backend, lib = native
+    status = bytes(PNIORealTime_IOxS(dataState=1, instance=instance, reserved=0, extension=0))[0]
+    lib.shim_set(10, status)
+    data, meta = await backend.read_io("line1-io", 1, 1, 2)
+    assert data == b"\x01\x02" and meta["iops"] == status and meta["quality"] == "good"
+
+
 async def test_native_write_error_is_unknown_and_never_replayed(native):
     backend, lib = native
     lib.shim_set(16, -1)

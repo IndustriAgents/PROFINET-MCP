@@ -119,3 +119,25 @@ external requirements, not an unresolved SDK selection. See the
 The native C fixture is independently written. CI also compiles it against the
 pinned upstream headers to detect ABI discrepancies. No upstream driver
 implementation or toolkit headers are included in the distribution.
+
+## Second-pass status encoding validation and roadmap
+
+The controller guide above (§3.1.7) defines a one-byte status per mapped submodule.
+The [Scapy PROFINET codec](https://github.com/secdev/scapy/blob/master/scapy/contrib/pnio.py)
+independently represents IOxS as data-state bit 7, instance bits 5..6, reserved
+bits 1..4 and extension bit 0. [Schneider's IOxS guide](https://product-help.schneider-electric.com/Machine%20Expert/V2.0/en/core_ProfinetIO_Configuration_Editor/core_ProfinetIO_Configuration_Editor/modules/_pnio_edt_device_ioxs.html)
+also separates provider and consumer quality. The adapter previously accepted
+any byte with bit 7 set. It now rejects extension encodings outside this one-byte
+profile and nonzero reserved bits before returning input or submitting output.
+It preserves the instance bits rather than inventing additional GOOD-state
+restrictions. Tests encode independent Scapy statuses and run them through the
+compiled C ABI fixture, including vendor-header builds and zero-write assertions.
+
+Prioritized remaining work:
+
+1. Isolated hardware acceptance of controller handshake timing, device quality
+   transitions, AR loss, watchdog behavior and physical output commissioning.
+2. Read-only verification of commissioned maps against documented controller
+   configuration services, before exposing additional process-image layouts.
+3. Bounded record/alarm workflows using the selected firmware's actual public
+   mailbox services, with correlation, loss reporting and operation-specific policy.
