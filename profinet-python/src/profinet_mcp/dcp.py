@@ -1,10 +1,8 @@
-"""PROFINET DCP Identify: the read-only part of the Discovery and basic Configuration Protocol.
+"""PROFINET DCP Identify codec and bounded raw Ethernet transport.
 
 The network backend multicasts one *Identify All* request on the configured
-interface and decodes the *Identify* responses (IEC 61158-6-10). DCP *Set*
-(station name, IP suite, identification signal) is deliberately not
-implemented here: it changes devices and has not been verified against
-hardware.
+interface and decodes the *Identify* responses. The separate dcp_set module
+implements explicit unicast configuration requests over the same transport.
 
 DCP frames are small TLV structures, encoded and decoded below with
 ``struct``. Sending and capturing raw Ethernet frames is done by Scapy through
@@ -39,6 +37,8 @@ SUBOPTION_ALL_SELECTOR = 0xFF
 RESPONSE_DELAY_NO_SPREAD = 0x0001
 MIN_FRAME_LENGTH = 60  # Ethernet minimum without FCS
 SNIFFER_START_TIMEOUT = 3.0
+MAX_CAPTURE_FRAMES = 1024
+MAX_CAPTURE_BYTES = 1024 * 1024
 
 _DCP_HEADER = struct.Struct("!BBIHH")  # ServiceID, ServiceType, Xid, ResponseDelay/Reserved, DCPDataLength
 _BLOCK_HEADER = struct.Struct("!BBH")  # Option, Suboption, DCPBlockLength
@@ -62,6 +62,12 @@ class DcpError(RuntimeError):
 
 class DcpPermissionError(DcpError):
     """The process may not send/capture raw Ethernet frames on the interface."""
+
+
+class CapturedFrames(list[bytes]):
+    """A bounded capture; loss must be visible to discovery and control callers."""
+
+    truncated = False
 
 
 class L2Transport(Protocol):
@@ -227,6 +233,8 @@ def identify_all(transport: L2Transport, timeout: float, xid: int | None = None)
         "xid": f"0x{xid:08x}",
         "frames_received": len(frames),
         "malformed_frames": malformed,
+        "complete": not getattr(frames, "truncated", False) and malformed == 0,
+        "capture_truncated": bool(getattr(frames, "truncated", False)),
     }
     return list(devices.values()), info
 
@@ -284,18 +292,37 @@ class ScapyL2Transport:
             )
         return mac
 
-    def exchange(self, frame: bytes, timeout: float, accept: Callable[[bytes], bool]) -> list[bytes]:
+    def exchange(
+        self,
+        frame: bytes,
+        timeout: float,
+        accept: Callable[[bytes], bool],
+        *,
+        before_send: Callable[[], None] | None = None,
+    ) -> list[bytes]:
         api = self._api()
         started = threading.Event()
+        captured = CapturedFrames()
+        stored_bytes = 0
 
         def raw_bytes(packet: Any) -> bytes:
             original = getattr(packet, "original", None)
             return bytes(original) if original else bytes(packet)
 
+        def collect(packet: Any) -> None:
+            nonlocal stored_bytes
+            raw = raw_bytes(packet)
+            if len(captured) >= MAX_CAPTURE_FRAMES or stored_bytes + len(raw) > MAX_CAPTURE_BYTES:
+                captured.truncated = True
+                return
+            captured.append(raw)
+            stored_bytes += len(raw)
+
         sniffer = api.AsyncSniffer(
             iface=self.interface,
-            store=True,
+            store=False,
             lfilter=lambda packet: accept(raw_bytes(packet)),
+            prn=collect,
             started_callback=started.set,
         )
         sniffer.start()
@@ -310,16 +337,21 @@ class ScapyL2Transport:
                 raise _wrap_os_error(self.interface, failure, request_sent=False) from failure
             raise DcpError(f"Packet capture on interface {self.interface!r} did not start", request_sent=False)
         try:
+            if before_send is not None:
+                before_send()
             api.sendp(api.Raw(frame), iface=self.interface, verbose=False)
+        except DcpError:
+            self._stop(sniffer)
+            raise
         except Exception as exc:
             self._stop(sniffer)
             raise _wrap_os_error(self.interface, exc) from exc
         time.sleep(timeout)
         try:
-            packets = sniffer.stop()
+            sniffer.stop()
         except Exception as exc:
             raise _wrap_os_error(self.interface, exc, request_sent=True) from exc
-        return [raw_bytes(packet) for packet in packets or []]
+        return captured
 
     @staticmethod
     def _stop(sniffer: Any) -> None:

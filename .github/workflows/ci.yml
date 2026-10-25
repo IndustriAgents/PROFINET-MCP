@@ -18,6 +18,22 @@ permissions:
 # subprocess on an OS-assigned local port) and use fake layer-2 transports
 # for DCP, so no raw socket is ever opened.
 jobs:
+  cifx-abi:
+    name: cifX ABI against pinned Hilscher headers
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - name: Fetch the reviewed header revision (no driver build or installation)
+        run: |
+          git init "$RUNNER_TEMP/cifx-sdk"
+          git -C "$RUNNER_TEMP/cifx-sdk" remote add origin https://github.com/HilscherAutomation/nxdrvlinux.git
+          git -C "$RUNNER_TEMP/cifx-sdk" fetch --depth 1 origin c4a1f67acbcc03420edaae30952c5ff5f57e30c5
+          git -C "$RUNNER_TEMP/cifx-sdk" checkout --detach FETCH_HEAD
+      - name: Compile native fixture against official headers and test MCP I/O
+        working-directory: profinet-python
+        run: CIFX_SDK_HEADERS="$RUNNER_TEMP/cifx-sdk" uv run --locked pytest -v tests/test_cifx.py
   server:
     name: MCP server (profinet-python)
     runs-on: ubuntu-latest
@@ -126,3 +142,22 @@ jobs:
           uv pip install -p "$venv" -r "$venv.txt"
           uv pip install -p "$venv" --no-deps -e .
           "$venv/bin/python" -m pytest -v -p no:cacheprovider
+
+  packages:
+    name: Installed wheel and npm contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0; same pin as release
+        with:
+          node-version: '22'
+      - run: python scripts/verify_contract.py
+      - run: python scripts/prepare_npm.py
+      - run: npm --prefix npm test
+      - run: npm pack --ignore-scripts
+        working-directory: npm
+      - run: python scripts/smoke_packages.py python
+      - run: python scripts/smoke_packages.py npm
+      - run: uvx twine check --strict dist/*

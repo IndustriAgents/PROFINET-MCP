@@ -13,10 +13,10 @@
 
 MCP server for PROFINET IO networks (PROFINET is a PROFIBUS & PROFINET
 International standard), plus a mock IO device to develop and test against.
-It lets AI agents discover devices, parse GSDML device descriptions, and -
-against the mock - read and write I/O data and run the DCP configuration
-services. On a real network only DCP discovery is implemented so far (see
-[Status](#status)). It follows the same shape as the other
+It lets AI agents discover devices, parse GSDML device descriptions, and run
+gated unicast DCP configuration services. The optional `cifx` backend reads and
+writes a precommissioned Hilscher controller process image; its firmware owns
+cyclic I/O (see [deployment guide](docs/cifx-controller.md)). It follows the same shape as the other
 [IndustriConnect](https://github.com/IndustriAgents/IndustriConnect) servers
 (Modbus, S7comm and the rest): one `uv` project for the server, one for the
 mock, and the shared `{ success, data, error, meta }` response envelope.
@@ -31,7 +31,8 @@ envelope from a tool that talks to devices says which one answered in
 |---------|------------------|------------|
 | `none` (default) | Nothing | `ping`, `get_connection_status`, `list_devices`, `load_gsd_file`; device tools return `success: false` and say how to pick a backend |
 | `mock` | [`profinet-mock-server`](profinet-mock-server/README.md) over TCP (JSON lines) | Every tool |
-| `network` | The PROFINET network on `PROFINET_INTERFACE` (raw Ethernet) | DCP discovery: `discover_devices`, `get_device_info`, `test_device_communication` |
+| `cifx` | Linux Hilscher cifX/netX controller with commissioned firmware/map | Mapped input/output I/O and local/controller status; explicit initialization and write gates |
+| `network` | The PROFINET network on `PROFINET_INTERFACE` (raw Ethernet) | DCP discovery plus gated `set_device_name`, `set_device_ip`, and `identify_device` |
 
 The server is **read-only by default**:
 
@@ -72,26 +73,30 @@ The server is **read-only by default**:
 
 ### Known issues and limitations
 
-- **No cyclic I/O on a real network.** `read_io_data`, `write_io_data` and the
-  alias tools need an IO controller with an application relationship (AR) to
-  the device; this server has no IO-controller stack. On the `network`
-  backend they return `success: false` ("Not implemented ...") without
-  sending anything.
-- **No DCP Set on a real network.** `set_device_name`, `set_device_ip` and
-  `identify_device` (the flashing LED) are DCP Set services. They are
-  implemented against the mock only; on the `network` backend they return
-  `success: false` without sending anything.
-- **DCP discovery is not yet verified against hardware.** The Identify
-  request/response codec is unit-tested against hand-written frames and
+- **cifX requires commissioned hardware.** The optional controller backend supports
+  exclusively owned UIO `donttouch` cards, PROFINET IO Controller V3.2, one mapped
+  input/output area, and validated quality/AR state. The network DCP backend
+  continues to refuse cyclic I/O. Driver/firmware installation and engineering
+  are external; see [cifX requirements and limits](docs/cifx-controller.md).
+- **DCP Set uses explicit unicast MAC addresses.** Name and IP settings request
+  permanent storage. Both configuration gates must be enabled. A correlated
+  protocol acknowledgement does not verify physical completion. Live Signal
+  sends one flash sequence and accepts only `duration_s=3`; the device controls
+  actual LED timing. The default changes from 5 to 3 seconds for all backends;
+  explicit mock durations remain supported.
+- **DCP is not yet verified against hardware.** Identify and Set
+  request/response codecs are tested against packet fixtures and
   cross-checked with Scapy's PROFINET dissector, but it has not been run
   against real devices. It needs raw-socket privileges (root or
   `CAP_NET_RAW` on Linux, `/dev/bpf*` access on macOS). Reports from real
-  networks are welcome.
+  networks are welcome. See [protocol research and verification](docs/protocol-research.md).
 - Discovery on the `network` backend sends at most one DCP Identify All every
   2 seconds so a model cannot flood the network. `discover_devices` calls that
   come sooner are refused (`meta.retry_after_s`); `get_device_info` and
   `test_device_communication` reuse the last answer instead
-  (`meta.cached: true`, `meta.age_s`).
+  (`meta.cached: true`, `meta.age_s`). Native capture is serialized even after
+  cancellation and bounded to 1,024 accepted frames / 1 MiB; discovery reports
+  `meta.complete=false` and `meta.capture_truncated=true` when the capture loses data.
 - `load_gsd_file` accepts only files encoded in UTF-8, UTF-16, UTF-32,
   ISO-8859-1 or US-ASCII (decided from the byte-order mark or the XML
   declaration), up to 8 MiB, and refuses any `DOCTYPE` or `ENTITY`
@@ -187,29 +192,29 @@ uv run --directory profinet-python profinet-mcp --help
 PROFINET_BACKEND=network PROFINET_INTERFACE=eth0 uv run --directory profinet-python profinet-mcp
 ```
 
-Only discovery is available there (see [Status](#status)), and the process
+DCP discovery and gated unicast configuration are available there, and the process
 needs raw-socket privileges on that interface. Read [SECURITY.md](SECURITY.md)
 first. All settings are listed under
 [Configuration](profinet-python/README.md#configuration).
 
 ## Tools
 
-| Tool | What it does | `mock` | `network` |
-|------|--------------|:------:|:---------:|
-| `discover_devices(timeout?)` | Lists the devices that answer DCP Identify (timeout 0.5-60 s) | ✓ | ✓ |
-| `get_device_info(device_name)` | Discovery details for one device, by station name, IP or MAC | ✓ | ✓ |
-| `test_device_communication(device_name)` | Checks that a device answers discovery | ✓ | ✓ |
-| `read_io_data(device_name, slot, subslot, data_length)` | Reads I/O data, returned as hex and byte values | ✓ | – |
-| `write_io_data(device_name, slot, subslot, data)` | Writes output bytes; needs `PROFINET_WRITES_ENABLED=true` | ✓ | – |
-| `identify_device(device_mac, duration_s=5)` | Makes a device flash its identification LED (DCP Signal); needs both switches | ✓ | – |
-| `set_device_name(device_mac, name)` | DCP Set of the station name; needs `PROFINET_WRITES_ENABLED=true` and `PROFINET_CONFIG_CMDS_ENABLED=true` | ✓ | – |
-| `set_device_ip(device_mac, ip_address, subnet_mask, gateway?)` | DCP Set of the IP suite; same switches as `set_device_name` | ✓ | – |
-| `list_devices` | Lists the aliases defined in `DEVICE_MAP_FILE` | local | local |
-| `read_device_by_alias(alias)` | `read_io_data` for the device and slot behind an alias | ✓ | – |
-| `write_device_by_alias(alias, data)` | `write_io_data` for an alias; same write switch | ✓ | – |
-| `load_gsd_file(filepath)` | Parses a GSDML file: identity, access points, modules, fixed and pluggable submodules, I/O sizes | local | local |
-| `ping` | Version, backend, settings and safety switches; contacts nothing | local | local |
-| `get_connection_status` | Settings plus a reachability check of the mock | ✓ | not checked |
+| Tool | What it does | `mock` | `network` | `cifx` |
+|------|--------------|:------:|:---------:|:------:|
+| `discover_devices(timeout?)` | Lists the devices that answer DCP Identify (timeout 0.5-60 s) | ✓ | ✓ | – |
+| `get_device_info(device_name)` | Discovery details for one device, by station name, IP or MAC | ✓ | ✓ | – |
+| `test_device_communication(device_name)` | Checks that a device answers discovery | ✓ | ✓ | – |
+| `read_io_data(device_name, slot, subslot, data_length)` | Reads I/O data, returned as hex and byte values | ✓ | – | ✓ |
+| `write_io_data(device_name, slot, subslot, data)` | Writes output bytes; needs `PROFINET_WRITES_ENABLED=true` | ✓ | – | ✓ |
+| `identify_device(device_mac, duration_s=3)` | Makes a device flash its identification LED (DCP Signal); needs both switches | ✓ | ✓ | – |
+| `set_device_name(device_mac, name)` | DCP Set of the station name; needs `PROFINET_WRITES_ENABLED=true` and `PROFINET_CONFIG_CMDS_ENABLED=true` | ✓ | ✓ | – |
+| `set_device_ip(device_mac, ip_address, subnet_mask, gateway?)` | DCP Set of the IP suite; same switches as `set_device_name` | ✓ | ✓ | – |
+| `list_devices` | Lists the aliases defined in `DEVICE_MAP_FILE` | local | local | local |
+| `read_device_by_alias(alias)` | `read_io_data` for the device and slot behind an alias | ✓ | – | ✓ |
+| `write_device_by_alias(alias, data)` | `write_io_data` for an alias; same write switch | ✓ | – | ✓ |
+| `load_gsd_file(filepath)` | Parses a GSDML file: identity, access points, modules, fixed and pluggable submodules, I/O sizes | local | local | local |
+| `ping` | Version, backend, settings and safety switches; contacts nothing | local | local | local |
+| `get_connection_status` | Settings plus a reachability check of the mock | ✓ | not checked | controller check |
 
 "–" means the tool returns `success: false` with a "Not implemented" error
 and sends nothing. Every tool has a description and documented, range-checked

@@ -41,7 +41,8 @@ Only JSON-RPC goes to stdout; logs go to stderr.
 |--------------------|-----------|
 | `none` (default) | Contacts nothing. Device tools return `success: false` explaining how to choose a backend. |
 | `mock` | Sends the mock's JSON-lines requests to `PROFINET_MOCK_HOST:PROFINET_MOCK_PORT`. One TCP connection per call; answers are checked (byte counts, confirmations) before a tool reports success. |
-| `network` | DCP Identify All on `PROFINET_INTERFACE` for `discover_devices`, `get_device_info` and `test_device_communication`, at most once every 2 s. I/O and DCP Set tools return `success: false` ("Not implemented ...") and send nothing. |
+| `cifx` | Optional Hilscher controller process-image I/O. Requires explicit attach gate, Linux UIO donttouch card, commissioned V3.2 firmware and strict map. See [cifX guide](../docs/cifx-controller.md). |
+| `network` | DCP Identify All on `PROFINET_INTERFACE` for `discover_devices`, `get_device_info` and `test_device_communication`, at most once every 2 s. Gated DCP Set name/IP/Signal use unicast requests without replay; cyclic I/O remains unsupported. |
 
 `meta.backend` in each envelope names the backend that answered.
 
@@ -106,12 +107,12 @@ defensively:
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `PROFINET_BACKEND` | `none` | `none`, `mock` or `network`, see above |
+| `PROFINET_BACKEND` | `none` | `none`, `mock`, `network` or `cifx`, see above |
 | `PROFINET_WRITES_ENABLED` | `false` | `true` allows tools that change a device (`write_io_data`, `write_device_by_alias`; also required by the DCP commands) |
 | `PROFINET_CONFIG_CMDS_ENABLED` | `false` | `true` (together with `PROFINET_WRITES_ENABLED`) allows `set_device_name`, `set_device_ip` and `identify_device` |
 | `PROFINET_MOCK_HOST` | `127.0.0.1` | Address of the mock IO device |
 | `PROFINET_MOCK_PORT` | `5600` | Port of the mock IO device |
-| `PROFINET_INTERFACE` | `eth0` | Ethernet interface for DCP discovery (`network` backend) |
+| `PROFINET_INTERFACE` | `eth0` | Ethernet interface for DCP discovery and configuration (`network` backend) |
 | `PROFINET_DCP_TIMEOUT` | `5` | Default discovery time, in seconds (0.5-60) |
 | `PROFINET_TIMEOUT` | `5` | Timeout for each connect and each reply from the mock, in seconds |
 | `PROFINET_MAX_RETRIES` | `3` | Extra connection attempts to the mock, and re-sends of a read whose reply was lost (0-10); changes are never re-sent |
@@ -184,3 +185,7 @@ mutation-checked: each one fails when the protection it covers is removed.
 
 Dependency floors in `pyproject.toml` are the lowest versions the suite passes
 on; CI's `lowest-direct` job checks that with `--resolution lowest-direct`.
+
+The test suite requires a C compiler (`cc`) for cifX ABI and native failure/cancellation fixtures.
+No actual card or driver is required. See [cifX configuration and verification](../docs/cifx-controller.md)
+for all `PROFINET_CIFX_*` settings and the pinned upstream-header CI check.

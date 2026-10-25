@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "device_number": 1234,
+  "serial_number": 5678,
+  "firmware_name": "PROFINET IO Controller",
+  "firmware_version": [
+    3,
+    2,
+    0,
+    0
+  ],
+  "input_size": 64,
+  "output_size": 64,
+  "bit_list_offset": 16,
+  "max_age_ms": 1000,
+  "mappings": [
+    {
+      "device_name": "line1-io",
+      "slot": 1,
+      "subslot": 1,
+      "ar": 1,
+      "direction": "input",
+      "offset": 0,
+      "length": 2,
+      "status_offset": 2
+    },
+    {
+      "device_name": "line1-io",
+      "slot": 1,
+      "subslot": 1,
+      "ar": 1,
+      "direction": "output",
+      "offset": 0,
+      "length": 2,
+      "status_offset": 3
+    }
+  ]
+}

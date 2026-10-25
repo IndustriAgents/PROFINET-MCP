@@ -378,9 +378,6 @@ async def test_network_backend_is_honest() -> None:
     for tool, args in [
         ("read_io_data", {"device_name": "line1-io", "slot": 1, "subslot": 1, "data_length": 8}),
         ("write_io_data", {"device_name": "line1-io", "slot": 1, "subslot": 1, "data": [1]}),
-        ("identify_device", {"device_mac": MAC}),
-        ("set_device_name", {"device_mac": MAC, "name": "abc"}),
-        ("set_device_ip", {"device_mac": MAC, "ip_address": "10.0.0.2", "subnet_mask": "255.0.0.0"}),
     ]:
         result = await call(server, tool, **args)
         assert result["success"] is False, tool

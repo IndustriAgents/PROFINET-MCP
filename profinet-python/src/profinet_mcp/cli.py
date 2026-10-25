@@ -26,12 +26,14 @@ OWN_EXTRAS = frozenset({"DEVICE_MAP_FILE"})
 
 ENVIRONMENT_HELP = """\
 configuration (environment variables, --env-file, or profinet-python/.env):
-  PROFINET_BACKEND              none (default) | mock | network
+  PROFINET_BACKEND              none (default) | mock | network | cifx
   PROFINET_MOCK_HOST/PORT       mock IO device address (127.0.0.1:5600)
   PROFINET_INTERFACE            Ethernet interface for DCP discovery (eth0)
   PROFINET_WRITES_ENABLED       allow tools that change devices (default false)
   PROFINET_CONFIG_CMDS_ENABLED  also needed for set_device_name, set_device_ip,
                                 identify_device (default false)
+  PROFINET_CIFX_INIT_ENABLED    explicitly attach a commissioned cifX controller (default false)
+  PROFINET_CIFX_LIBRARY/MAP_FILE absolute driver-library and commissioned-image map paths
   DEVICE_MAP_FILE               JSON file of device aliases
   PROFINET_GSD_PATH             directory searched by load_gsd_file
 Without --env-file, the only .env read is profinet-python/.env of a source
@@ -166,6 +168,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     detail = {
         "mock": f" ({config.mock_host}:{config.mock_port})",
         "network": f" (interface {config.interface})",
+        "cifx": (
+            f" (card {config.cifx_card_number}, channel {config.cifx_channel}, attach gate {config.cifx_init_enabled})"
+        ),
     }.get(config.backend, " - device tools will report that no backend is selected")
     log.info(
         "PROFINET MCP server %s: backend=%s%s, writes %s, config commands %s",
