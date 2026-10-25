@@ -194,6 +194,10 @@ class Backend(Protocol):
 
 
 def create_backend(config: ProfinetConfig) -> Backend:
+    if config.backend == "cifx":
+        from .adapters.cifx import CifxBackend
+
+        return CifxBackend(config)
     if config.backend == BACKEND_MOCK:
         return MockBackend(
             host=config.mock_host,

@@ -18,7 +18,8 @@ FALSE_VALUES = frozenset({"0", "false", "f", "no", "n", "off"})
 BACKEND_NONE = "none"
 BACKEND_MOCK = "mock"
 BACKEND_NETWORK = "network"
-BACKENDS = (BACKEND_NONE, BACKEND_MOCK, BACKEND_NETWORK)
+BACKEND_CIFX = "cifx"
+BACKENDS = (BACKEND_NONE, BACKEND_MOCK, BACKEND_NETWORK, BACKEND_CIFX)
 
 
 class ConfigError(ValueError):
@@ -84,6 +85,25 @@ class ProfinetConfig:
     config_cmds_enabled: bool = False
     device_map_path: Path | None = None
     gsd_base_path: Path | None = None
+    cifx_library: Path | None = None
+    cifx_map_path: Path | None = None
+    cifx_base_dir: Path = Path("/opt/cifx")
+    cifx_card_number: int = 0
+    cifx_channel: int = 0
+    cifx_init_enabled: bool = False
+
+    def __post_init__(self):
+        if self.backend == BACKEND_CIFX:
+            if self.cifx_library is None or not self.cifx_library.is_absolute():
+                raise ConfigError("cifx requires an absolute PROFINET_CIFX_LIBRARY path")
+            if self.cifx_map_path is None or not self.cifx_map_path.is_absolute():
+                raise ConfigError("cifx requires an absolute PROFINET_CIFX_MAP_FILE path")
+            if not self.cifx_base_dir.is_absolute():
+                raise ConfigError("PROFINET_CIFX_BASE_DIR must be absolute")
+            if type(self.cifx_card_number) is not int or not 0 <= self.cifx_card_number <= 255:
+                raise ConfigError("PROFINET_CIFX_CARD_NUMBER must be 0..255")
+            if type(self.cifx_channel) is not int or not 0 <= self.cifx_channel <= 15:
+                raise ConfigError("PROFINET_CIFX_CHANNEL must be 0..15")
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> ProfinetConfig:
@@ -121,4 +141,10 @@ class ProfinetConfig:
             config_cmds_enabled=env_bool("PROFINET_CONFIG_CMDS_ENABLED", False, env),
             device_map_path=_env_path(env, "DEVICE_MAP_FILE"),
             gsd_base_path=_env_path(env, "PROFINET_GSD_PATH"),
+            cifx_library=_env_path(env, "PROFINET_CIFX_LIBRARY"),
+            cifx_map_path=_env_path(env, "PROFINET_CIFX_MAP_FILE"),
+            cifx_base_dir=_env_path(env, "PROFINET_CIFX_BASE_DIR") or Path("/opt/cifx"),
+            cifx_card_number=int(_env_number(env, "PROFINET_CIFX_CARD_NUMBER", 0, int, 0, 255)),
+            cifx_channel=int(_env_number(env, "PROFINET_CIFX_CHANNEL", 0, int, 0, 15)),
+            cifx_init_enabled=env_bool("PROFINET_CIFX_INIT_ENABLED", False, env),
         )

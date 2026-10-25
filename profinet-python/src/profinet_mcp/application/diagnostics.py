@@ -54,6 +54,7 @@ class DiagnosticsOperations:
                     self.client.backend_name,
                     writes_enabled=self.config.writes_enabled,
                     extra_gate=self.config.config_cmds_enabled,
+                    cifx_init_enabled=self.config.cifx_init_enabled,
                 ),
             },
             self.backend_meta(contacted=False),

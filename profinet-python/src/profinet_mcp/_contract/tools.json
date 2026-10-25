@@ -5,7 +5,7 @@
   "tools": [
     {
       "name": "read_io_data",
-      "description": "Select one target mode and provide only its parameters.\n\naddress: Read I/O data from a slot/subslot of a device; returns raw_data_hex and the byte values.\n\n        Supported by the mock backend. The network backend returns success=false: cyclic PROFINET IO\n        needs an IO controller with an application relationship, which this server does not have.\n        \n\nalias: read_io_data for the device, slot, subslot and length behind an alias from DEVICE_MAP_FILE.",
+      "description": "Select one target mode and provide only its parameters. address: Read raw bytes from the specified device, slot and subslot. alias: Resolve those values through DEVICE_MAP_FILE. Supported by mock and optional cifx backends. cifx requires an explicitly enabled, precommissioned Hilscher controller and an exact process-image mapping; it validates controller identity, AR state and provider quality and obtains a new firmware handshake snapshot. It does not start the bus or configure devices. The network DCP backend does not provide cyclic I/O.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -248,6 +248,32 @@
               },
               "simulated": {
                 "type": "boolean"
+              },
+              "quality": {
+                "type": "string",
+                "description": "cifx reports good only after checking the mapped AR state and provider/consumer status."
+              },
+              "ar": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 128
+              },
+              "iops": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              },
+              "freshness": {
+                "type": "string",
+                "description": "new_firmware_handshake identifies a newly acquired controller input snapshot; it is not a physical timestamp."
+              },
+              "age_ms": {
+                "type": "number",
+                "minimum": 0
+              },
+              "device_verified": {
+                "type": "boolean",
+                "description": "Runtime controller identity and commissioned AR/quality checks passed; this does not independently verify physical wiring."
               }
             },
             "additionalProperties": true,
@@ -259,7 +285,7 @@
     },
     {
       "name": "write_io_data",
-      "description": "Select one target mode and provide only its parameters.\n\naddress: Write bytes to an output slot/subslot of a device. This changes physical outputs.\n\n        Refused unless PROFINET_WRITES_ENABLED=true (the server is read-only by default). Supported by\n        the mock backend; the network backend returns success=false without sending anything.\n        \n\nalias: write_io_data for the device, slot and subslot behind an alias from DEVICE_MAP_FILE.\n\n        Refused unless PROFINET_WRITES_ENABLED=true, like write_io_data.\n        ",
+      "description": "Select one target mode and provide only its parameters. address: Write output bytes to the specified device, slot and subslot. alias: Resolve the target through DEVICE_MAP_FILE. Requires PROFINET_WRITES_ENABLED=true. Supported by mock and optional cifx backends. cifx requires explicit initialization opt-in, a commissioned controller and an exact full-submodule mapping; a successful write confirms controller process-image acceptance, not physical application. A failed or interrupted native write may have applied and must not be automatically replayed. The network DCP backend does not provide cyclic I/O.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -510,6 +536,31 @@
               },
               "simulated": {
                 "type": "boolean"
+              },
+              "quality": {
+                "type": "string",
+                "description": "cifx reports good only after checking the mapped AR state and provider/consumer status."
+              },
+              "ar": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 128
+              },
+              "iocs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255
+              },
+              "confirmation_scope": {
+                "type": "string",
+                "description": "controller_process_image confirms native controller acceptance only."
+              },
+              "device_applied": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Null means physical application has not been verified."
               }
             },
             "additionalProperties": true,
@@ -521,7 +572,7 @@
     },
     {
       "name": "discover_devices",
-      "description": "Discover PROFINET IO devices.\n\n        Network backend: multicasts a DCP Identify All request on PROFINET_INTERFACE and lists every\n        device that answers within `timeout` seconds (needs raw-socket privileges). Mock backend: lists\n        the devices simulated by profinet-mock-server. Each device reports device_name, mac_address,\n        ip_address, subnet_mask, gateway, vendor_id, device_id, device_type and type_of_station where\n        known (null otherwise). meta.backend says which backend answered.\n        ",
+      "description": "Discover PROFINET IO devices.\n\n        Network backend: multicasts a DCP Identify All request on PROFINET_INTERFACE and lists every\n        device that answers within `timeout` seconds (needs raw-socket privileges). Mock backend: lists\n        the devices simulated by profinet-mock-server. Each device reports device_name, mac_address,\n        ip_address, subnet_mask, gateway, vendor_id, device_id, device_type and type_of_station where\n        known (null otherwise). meta.backend says which backend answered.\n         The cifx backend uses commissioned mappings and does not perform DCP discovery.",
       "inputSchema": {
         "properties": {
           "timeout": {
@@ -713,7 +764,7 @@
     },
     {
       "name": "get_device_info",
-      "description": "Discovery details for one device, looked up by station name, IP address or MAC address.\n\n        Runs discovery (see discover_devices) and returns the matching device, or success=false if no\n        device with that name or address answered.\n        ",
+      "description": "Discovery details for one device, looked up by station name, IP address or MAC address.\n\n        Runs discovery (see discover_devices) and returns the matching device, or success=false if no\n        device with that name or address answered.\n         The cifx backend does not perform DCP discovery.",
       "inputSchema": {
         "properties": {
           "device_name": {
@@ -883,7 +934,7 @@
     },
     {
       "name": "identify_device",
-      "description": "Request one DCP identification flash sequence. Live backend accepts duration_s=3 only; the device controls actual LED timing. Mock supports other durations. Requires both PROFINET_WRITES_ENABLED and PROFINET_CONFIG_CMDS_ENABLED. Acknowledgement is not verification of the physical LED.",
+      "description": "Request one DCP identification flash sequence. Live backend accepts duration_s=3 only; the device controls actual LED timing. Mock supports other durations. Requires both PROFINET_WRITES_ENABLED and PROFINET_CONFIG_CMDS_ENABLED. Acknowledgement is not verification of the physical LED. Supported by network and mock backends; cifx does not configure stations.",
       "inputSchema": {
         "properties": {
           "device_mac": {
@@ -1614,7 +1665,7 @@
     },
     {
       "name": "ping",
-      "description": "Server health and settings: version, backend, connection settings and safety switches.\n\n        Does not contact any device; use get_connection_status to check the backend.\n         Reports static backend capabilities and native configuration gates; does not establish device reachability or permission.",
+      "description": "Report server version, backend, connection settings, safety switches and static backend capabilities. This reads local configuration and lifecycle state only; it never initializes a driver or contacts a device. Native configuration gates do not establish policy authorization or device reachability.",
       "inputSchema": {
         "properties": {},
         "title": "pingArguments",
@@ -1907,6 +1958,84 @@
                       }
                     },
                     "additionalProperties": false
+                  },
+                  "connection": {
+                    "type": "object",
+                    "properties": {
+                      "backend": {
+                        "type": "string"
+                      },
+                      "cifx": {
+                        "type": "object",
+                        "properties": {
+                          "init_enabled": {
+                            "type": "boolean"
+                          },
+                          "card_number": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "channel": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "initialized": {
+                            "type": "boolean"
+                          },
+                          "faulted": {
+                            "type": "boolean"
+                          },
+                          "mapping_count": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "firmware_name": {
+                            "type": "string"
+                          },
+                          "firmware_version": {
+                            "type": "array",
+                            "items": {
+                              "type": "integer",
+                              "minimum": 0
+                            },
+                            "minItems": 4,
+                            "maxItems": 4
+                          },
+                          "input_size": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "output_size": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "max_age_ms": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "mode": {
+                            "const": "precommissioned_donttouch"
+                          }
+                        },
+                        "additionalProperties": false,
+                        "description": "Configuration and local lifecycle of the selected commissioned controller; this does not prove that a field device is reachable.",
+                        "required": [
+                          "init_enabled",
+                          "card_number",
+                          "channel",
+                          "initialized",
+                          "faulted",
+                          "mapping_count",
+                          "firmware_name",
+                          "firmware_version",
+                          "input_size",
+                          "output_size",
+                          "max_age_ms",
+                          "mode"
+                        ]
+                      }
+                    },
+                    "additionalProperties": true
                   }
                 },
                 "additionalProperties": true
@@ -1976,7 +2105,7 @@
     },
     {
       "name": "get_connection_status",
-      "description": "Connection settings plus a reachability check of the backend.\n\n        Mock backend: opens and closes a TCP connection to the mock (reachable true/false). Network\n        backend: not checked (reachable null) - run discover_devices instead. No backend: reachable null.\n        ",
+      "description": "Report backend settings and reachability. Mock: check a TCP connection. Network DCP: reachable is null; use discover_devices. cifx: never initializes hardware; before the first explicitly enabled I/O call reachable is null, otherwise checks the owned controller identity and running/communication state. Controller reachability does not establish individual device quality; each cifx I/O validates its mapped AR and IOPS/IOCS.",
       "inputSchema": {
         "properties": {},
         "title": "get_connection_statusArguments",
@@ -2028,6 +2157,75 @@
                     "type": [
                       "string",
                       "null"
+                    ]
+                  },
+                  "cifx": {
+                    "type": "object",
+                    "properties": {
+                      "init_enabled": {
+                        "type": "boolean"
+                      },
+                      "card_number": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "channel": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "initialized": {
+                        "type": "boolean"
+                      },
+                      "faulted": {
+                        "type": "boolean"
+                      },
+                      "mapping_count": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "firmware_name": {
+                        "type": "string"
+                      },
+                      "firmware_version": {
+                        "type": "array",
+                        "items": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "minItems": 4,
+                        "maxItems": 4
+                      },
+                      "input_size": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "output_size": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "max_age_ms": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "mode": {
+                        "const": "precommissioned_donttouch"
+                      }
+                    },
+                    "additionalProperties": false,
+                    "description": "Configuration and local lifecycle of the selected commissioned controller; this does not prove that a field device is reachable.",
+                    "required": [
+                      "init_enabled",
+                      "card_number",
+                      "channel",
+                      "initialized",
+                      "faulted",
+                      "mapping_count",
+                      "firmware_name",
+                      "firmware_version",
+                      "input_size",
+                      "output_size",
+                      "max_age_ms",
+                      "mode"
                     ]
                   }
                 },
@@ -2983,6 +3181,75 @@
             "string",
             "null"
           ]
+        },
+        "cifx": {
+          "type": "object",
+          "properties": {
+            "init_enabled": {
+              "type": "boolean"
+            },
+            "card_number": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "channel": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "initialized": {
+              "type": "boolean"
+            },
+            "faulted": {
+              "type": "boolean"
+            },
+            "mapping_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "firmware_name": {
+              "type": "string"
+            },
+            "firmware_version": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "minItems": 4,
+              "maxItems": 4
+            },
+            "input_size": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "output_size": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_age_ms": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "mode": {
+              "const": "precommissioned_donttouch"
+            }
+          },
+          "additionalProperties": false,
+          "description": "Configuration and local lifecycle of the selected commissioned controller; this does not prove that a field device is reachable.",
+          "required": [
+            "init_enabled",
+            "card_number",
+            "channel",
+            "initialized",
+            "faulted",
+            "mapping_count",
+            "firmware_name",
+            "firmware_version",
+            "input_size",
+            "output_size",
+            "max_age_ms",
+            "mode"
+          ]
         }
       },
       "additionalProperties": true,
@@ -3261,6 +3528,84 @@
             }
           },
           "additionalProperties": false
+        },
+        "connection": {
+          "type": "object",
+          "properties": {
+            "backend": {
+              "type": "string"
+            },
+            "cifx": {
+              "type": "object",
+              "properties": {
+                "init_enabled": {
+                  "type": "boolean"
+                },
+                "card_number": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "channel": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "initialized": {
+                  "type": "boolean"
+                },
+                "faulted": {
+                  "type": "boolean"
+                },
+                "mapping_count": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "firmware_name": {
+                  "type": "string"
+                },
+                "firmware_version": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "minItems": 4,
+                  "maxItems": 4
+                },
+                "input_size": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "output_size": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "max_age_ms": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "mode": {
+                  "const": "precommissioned_donttouch"
+                }
+              },
+              "additionalProperties": false,
+              "description": "Configuration and local lifecycle of the selected commissioned controller; this does not prove that a field device is reachable.",
+              "required": [
+                "init_enabled",
+                "card_number",
+                "channel",
+                "initialized",
+                "faulted",
+                "mapping_count",
+                "firmware_name",
+                "firmware_version",
+                "input_size",
+                "output_size",
+                "max_age_ms",
+                "mode"
+              ]
+            }
+          },
+          "additionalProperties": true
         }
       },
       "additionalProperties": true

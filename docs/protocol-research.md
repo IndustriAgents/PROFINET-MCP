@@ -1,7 +1,8 @@
 # PROFINET protocol assessment and implementation evidence
 
 Research date: 2026-10-25. Baseline: `7ea97fa`. Supported native operations are
-DCP discovery and gated unicast DCP Set; this MCP is not a cyclic IO controller.
+DCP discovery and gated unicast DCP Set, plus an optional Hilscher cifX/netX
+process-image adapter for a precommissioned PROFINET IO Controller V3.2.
 
 ## Primary sources
 
@@ -30,10 +31,11 @@ copied into this MIT source.
 | `set_device_name` | New native single unicast Set / existing mock | Both config gates; permanent value; correlated protocol acknowledgement only | Hand-written request assertions and Scapy response fixtures |
 | `set_device_ip` | New native single unicast Set / existing mock | IP/mask/gateway validation; permanent value; no resend | Independent Scapy decode and acknowledgement fixtures |
 | `identify_device` | New native Signal / existing mock | One sequence; native duration_s=3 only; device controls timing | Payload fixture and unsupported-duration regression |
-| `read_io_data`, `write_io_data` | Mock only | Native operations explicitly unsupported; controller/AR required | Existing refusal and mock integration tests |
+| `read_io_data`, `write_io_data` | Mock; cifX commissioned input/output image | Exact mapped submodule, fresh handshake, AR and IOPS/IOCS validation; one write | Compiled native ABI fixture and real MCP tests |
 | `list_devices`, `load_gsd_file` | Local alias/GSDML data | Metadata is not proof of hardware availability | Existing parser/map tests |
 | `get_connection_status` | Mock TCP probe; native reachability unknown | Never fabricate a live device from interface settings | Existing backend/status tests |
-| Cyclic IO controller, record data, alarms, LLDP topology, security classes | Not implemented | Controller stack, device profile and engineering requirements needed | Explicit unsupported scope |
+| Cyclic frames / AR / watchdog | Hilscher controller firmware owns these | MCP is an on-demand process-image client | Reviewed public controller API and vendor driver source |
+| Record data, alarms, LLDP topology, security classes, live commissioning | Not implemented | Outside the supported mapped-I/O and DCP scope | Explicit unsupported scope |
 
 ## Native execution design
 
@@ -95,10 +97,25 @@ policies and map paths and invoke only local status with the native backend off.
 No live PROFINET packets were transmitted and no physical device was configured.
 DCP interoperability and LED timing remain unverified on hardware.
 
-Full cyclic I/O cannot be implemented by adding DCP calls: it requires an
-IO-controller runtime with configured application relationships, device module
-configuration, cycle/watchdog ownership, and IO quality handling. A supported
-controller SDK/card/runtime and firmware/API version have not been selected or
-provided. p-net's device role does not fill that gap. Choose that integration
-and provide the device's GSDML/module topology and an authorized isolated test
-network to implement and validate the remaining controller operations.
+The selected controller integration is Hilscher Linux cifX/netX with precommissioned
+PROFINET IO Controller V3.2 firmware. Its software adapter is implemented and tested;
+actual card/driver/firmware provisioning and isolated hardware acceptance remain
+external requirements, not an unresolved SDK selection. See the
+[cifX deployment and verification guide](cifx-controller.md).
+
+## cifX primary-source decisions
+
+- [Official nxdrvlinux source](https://github.com/HilscherAutomation/nxdrvlinux/tree/c4a1f67acbcc03420edaae30952c5ff5f57e30c5), inspected at that exact commit: `libcifx/cifxlinux.h`,
+  `Toolkit/Common/cifXAPI/cifXUser.h` / `cifXErrors.h`, `cifxlinux.c`,
+  `user_linux.c`, `cifXFunctions.c` and `Hil_DualPortMemory.h` define the ABI,
+  user-card ownership, donttouch startup, I/O modes and state flags. A cancelled
+  Python coroutine cannot cancel a C call. Native ownership therefore survives it.
+- [PROFINET IO Controller V3.2 API revision 6 (2017-09)](https://www.hilscher.com/fileadmin/cms_upload/en-US/Resources/pdf/PROFINET_IO_Controller_V3_Protocol_API_06_EN.pdf),
+  sections 2.2.1/2.2.2, 3.1.1/3.1.7 and 3.6.1: I/O data, provider/consumer statuses
+  and AR state lists are distinct. An input API call requests the next image only
+  after copying its current contents, motivating the discard-first read. The
+  output API acknowledges an image update rather than physical execution.
+
+The native C fixture is independently written. CI also compiles it against the
+pinned upstream headers to detect ABI discrepancies. No upstream driver
+implementation or toolkit headers are included in the distribution.
