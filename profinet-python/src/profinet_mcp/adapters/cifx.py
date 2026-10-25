@@ -293,6 +293,10 @@ class CifxBackend:
             with anyio.fail_after(max(0, attempt.deadline - time.monotonic())):
                 return await anyio.to_thread.run_sync(lambda: attempt.run(operation), abandon_on_cancel=True)
         except TimeoutError:
+            # Settle the write gate before classifying: a worker may have passed
+            # its pre-send check while still holding the guard. After abandon,
+            # write_invoked cannot change from false to true.
+            attempt.abandon()
             if write and attempt.write_invoked:
                 raise OutcomeUnknown("cifX write timed out after invocation; outcome unknown, no replay") from None
             raise RequestNotSent("cifX call timed out before an output write was invoked") from None

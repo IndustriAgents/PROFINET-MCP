@@ -7,14 +7,18 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import anyio
 import pytest
 
-from profinet_mcp.adapters.cifx import CifxBackend
+from profinet_mcp.adapters import cifx as cifx_module
+from profinet_mcp.adapters.cifx import Attempt, CifxBackend
 from profinet_mcp.adapters.cifx_abi import ChannelInfo, Device, DmaBuffer, IOInfo, LinuxInit
 from profinet_mcp.backends import OutcomeUnknown, RequestNotSent
 from profinet_mcp.config import ConfigError, ProfinetConfig
@@ -233,46 +237,139 @@ async def test_initialization_and_write_gates_are_enforced_in_backend(native):
     assert lib.shim_get(5) == 0
 
 
+async def wait_for_native(lib, field):
+    # This is a bounded failure guard, not a sleep that assumes dispatch occurred.
+    with anyio.fail_after(5):
+        while not lib.shim_get(field):
+            await anyio.sleep(0.001)
+
+
+@pytest.fixture
+def controlled_deadline(native, monkeypatch):
+    backend, _ = native
+    backend.config = replace(backend.config, timeout=30)
+    scopes = []
+
+    @contextmanager
+    def capture_deadline(delay):
+        with anyio.fail_after(delay) as scope:
+            scopes.append(scope)
+            yield scope
+
+    # Replace only this adapter's AnyIO namespace, leaving test guards untouched.
+    monkeypatch.setattr(cifx_module, "anyio", SimpleNamespace(fail_after=capture_deadline, to_thread=anyio.to_thread))
+    return scopes
+
+
 async def test_cancelled_native_worker_keeps_ownership_and_prevents_late_write(native):
     backend, lib = native
+    backend.config = replace(backend.config, timeout=30)
     lib.shim_set(17, 1)
-    with anyio.move_on_after(0.08):
-        await backend.write_io("line1-io", 1, 1, b"ab")
-    assert lib.shim_get(19) == 1
+
+    async def issue(*, task_status=anyio.TASK_STATUS_IGNORED):
+        with anyio.CancelScope() as scope:
+            task_status.started(scope)
+            await backend.write_io("line1-io", 1, 1, b"ab")
+
+    async with anyio.create_task_group() as tasks:
+        scope = await tasks.start(issue)
+        await wait_for_native(lib, 19)
+        scope.cancel()
     with pytest.raises(RequestNotSent, match="still owns"):
         await backend.write_io("line1-io", 1, 1, b"cd")
     backend.shutdown()
     assert lib.shim_get(4) == 0  # never deinit a session still in native code
     lib.shim_set(21, 1)
-    with anyio.fail_after(2):
+    with anyio.fail_after(5):
         while backend._initialized:
             await anyio.sleep(0.001)
     assert lib.shim_get(0) == 0 and lib.shim_get(4) == 1 and lib.shim_get(3) == 1
 
 
-async def test_write_deadline_retains_worker_and_reports_unknown(native):
+async def test_write_deadline_retains_worker_and_reports_unknown(native, controlled_deadline):
     backend, lib = native
-    backend.config = replace(backend.config, timeout=0.08)
     lib.shim_set(18, 1)
-    with pytest.raises(OutcomeUnknown):
-        await backend.write_io("line1-io", 1, 1, b"ab")
+
+    async def issue():
+        with pytest.raises(OutcomeUnknown):
+            await backend.write_io("line1-io", 1, 1, b"ab")
+
+    async with anyio.create_task_group() as tasks:
+        tasks.start_soon(issue)
+        await wait_for_native(lib, 20)
+        controlled_deadline[0].deadline = anyio.current_time()
     assert lib.shim_get(0) == 1
     with pytest.raises(RequestNotSent, match="still owns"):
         await backend.write_io("line1-io", 1, 1, b"cd")
     lib.shim_set(21, 1)
 
 
+async def test_deadline_before_write_reports_not_sent_and_prevents_late_dispatch(native, controlled_deadline):
+    backend, lib = native
+    lib.shim_set(17, 1)
+
+    async def issue():
+        with pytest.raises(RequestNotSent):
+            await backend.write_io("line1-io", 1, 1, b"ab")
+
+    async with anyio.create_task_group() as tasks:
+        tasks.start_soon(issue)
+        await wait_for_native(lib, 19)
+        controlled_deadline[0].deadline = anyio.current_time()
+    assert lib.shim_get(0) == 0
+    backend.shutdown()
+    lib.shim_set(21, 1)
+    with anyio.fail_after(5):
+        while backend._initialized:
+            await anyio.sleep(0.001)
+    assert lib.shim_get(0) == 0
+
+
+async def test_deadline_waits_for_in_progress_write_gate_before_classifying(native, controlled_deadline, monkeypatch):
+    backend, lib = native
+    checked = threading.Event()
+    resume = threading.Event()
+    original_abandon = Attempt.abandon
+
+    def paused_begin_write(attempt):
+        with attempt.guard:
+            attempt.check()
+            checked.set()
+            assert resume.wait(5), "deadline did not reach abandonment"
+            attempt.write_invoked = True
+
+    def release_gate_then_abandon(attempt):
+        resume.set()
+        original_abandon(attempt)
+
+    monkeypatch.setattr(Attempt, "begin_write", paused_begin_write)
+    monkeypatch.setattr(Attempt, "abandon", release_gate_then_abandon)
+    lib.shim_set(18, 1)
+
+    async def issue():
+        with pytest.raises(OutcomeUnknown):
+            await backend.write_io("line1-io", 1, 1, b"ab")
+
+    async with anyio.create_task_group() as tasks:
+        tasks.start_soon(issue)
+        with anyio.fail_after(5):
+            while not checked.is_set():
+                await anyio.sleep(0.001)
+        controlled_deadline[0].deadline = anyio.current_time()
+    await wait_for_native(lib, 20)
+    assert lib.shim_get(0) == 1
+    lib.shim_set(21, 1)
+
+
 async def test_expired_snapshot_cannot_authorize_write(native):
     backend, lib = native
-    backend.map = replace(backend.map, max_age_ms=1)
-    original = backend._quality
+    original = backend._snapshot
 
-    def slow_quality(*args):
-        status = original(*args)
-        time.sleep(0.01)
-        return status
+    def expired_snapshot(attempt):
+        snapshot, observed = original(attempt)
+        return snapshot, observed - backend.map.max_age_ms / 1000 - 1
 
-    backend._quality = slow_quality
+    backend._snapshot = expired_snapshot
     with pytest.raises(RequestNotSent, match="expired"):
         await backend.write_io("line1-io", 1, 1, b"ab")
     assert lib.shim_get(0) == 0
