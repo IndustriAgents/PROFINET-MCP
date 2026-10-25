@@ -41,7 +41,7 @@ Only JSON-RPC goes to stdout; logs go to stderr.
 |--------------------|-----------|
 | `none` (default) | Contacts nothing. Device tools return `success: false` explaining how to choose a backend. |
 | `mock` | Sends the mock's JSON-lines requests to `PROFINET_MOCK_HOST:PROFINET_MOCK_PORT`. One TCP connection per call; answers are checked (byte counts, confirmations) before a tool reports success. |
-| `network` | DCP Identify All on `PROFINET_INTERFACE` for `discover_devices`, `get_device_info` and `test_device_communication`, at most once every 2 s. I/O and DCP Set tools return `success: false` ("Not implemented ...") and send nothing. |
+| `network` | DCP Identify All on `PROFINET_INTERFACE` for `discover_devices`, `get_device_info` and `test_device_communication`, at most once every 2 s. Gated DCP Set name/IP/Signal use unicast requests without replay; cyclic I/O remains unsupported. |
 
 `meta.backend` in each envelope names the backend that answered.
 
@@ -111,7 +111,7 @@ defensively:
 | `PROFINET_CONFIG_CMDS_ENABLED` | `false` | `true` (together with `PROFINET_WRITES_ENABLED`) allows `set_device_name`, `set_device_ip` and `identify_device` |
 | `PROFINET_MOCK_HOST` | `127.0.0.1` | Address of the mock IO device |
 | `PROFINET_MOCK_PORT` | `5600` | Port of the mock IO device |
-| `PROFINET_INTERFACE` | `eth0` | Ethernet interface for DCP discovery (`network` backend) |
+| `PROFINET_INTERFACE` | `eth0` | Ethernet interface for DCP discovery and configuration (`network` backend) |
 | `PROFINET_DCP_TIMEOUT` | `5` | Default discovery time, in seconds (0.5-60) |
 | `PROFINET_TIMEOUT` | `5` | Timeout for each connect and each reply from the mock, in seconds |
 | `PROFINET_MAX_RETRIES` | `3` | Extra connection attempts to the mock, and re-sends of a read whose reply was lost (0-10); changes are never re-sent |

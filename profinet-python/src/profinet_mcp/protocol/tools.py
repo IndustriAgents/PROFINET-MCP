@@ -76,7 +76,9 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
                 return operations.err(tool, str(exc), operations.backend_meta(**outcome(tool, "rejected", True)))
             except OutcomeUnknown as exc:
                 return operations.err(
-                    tool, str(exc), operations.backend_meta(outcome_unknown=True, **outcome(tool, "unknown", True))
+                    tool,
+                    str(exc),
+                    operations.backend_meta(outcome_unknown=True, **outcome(tool, "unknown", exc.request_sent)),
                 )
             except ProfinetClientError as exc:
                 return operations.err(tool, str(exc), operations.backend_meta(**outcome(tool, "unknown", None)))
@@ -138,12 +140,12 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         return await operations.test_device_communication(device_name)
 
     @tool(WRITE)
-    async def identify_device(device_mac: DeviceMac, duration_s: IdentifySeconds = 5) -> Envelope:
+    async def identify_device(device_mac: DeviceMac, duration_s: IdentifySeconds = 3) -> Envelope:
         """Make a device flash its identification LED (DCP Set Signal) so it can be found in the cabinet.
 
         A DCP configuration command: refused unless both PROFINET_WRITES_ENABLED=true and
-        PROFINET_CONFIG_CMDS_ENABLED=true, like set_device_name. Supported by the mock backend. The
-        network backend does not implement DCP Set and returns success=false without sending anything.
+        PROFINET_CONFIG_CMDS_ENABLED=true, like set_device_name. Live DCP sends one flash sequence
+        (duration_s=3 only); the device controls physical LED timing. Mock supports arbitrary durations.
         """
         return await operations.identify_device(device_mac, duration_s)
 
@@ -154,8 +156,8 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         Refused unless both PROFINET_WRITES_ENABLED=true and PROFINET_CONFIG_CMDS_ENABLED=true:
         renaming a device in a running plant takes it away from the IO controller that expects it.
         The name must follow the PROFINET rules (lowercase a-z, 0-9, '-', dot-separated labels of
-        1-63 characters, at most 240 in total). Supported by the mock backend; the network backend
-        returns success=false without sending anything.
+        1-63 characters, at most 240 in total). Network DCP requests permanent storage and requires
+        an explicit unicast MAC. Acknowledgement does not verify physical completion.
         """
         return await operations.set_device_name(device_mac, name)
 
@@ -169,8 +171,8 @@ def register_tools(server: FastMCP, resources: ToolResources) -> None:
         """Assign IP address, subnet mask and gateway (DCP Set IP) to the device with this MAC address.
 
         Refused unless both PROFINET_WRITES_ENABLED=true and PROFINET_CONFIG_CMDS_ENABLED=true. The
-        gateway, if given, must be inside the subnet. Supported by the mock backend; the network
-        backend returns success=false without sending anything.
+        gateway, if given, must be inside the subnet. Network DCP requests permanent storage and
+        requires an explicit unicast MAC. An unknown result must not be automatically retried.
         """
         return await operations.set_device_ip(device_mac, ip_address, subnet_mask, gateway)
 

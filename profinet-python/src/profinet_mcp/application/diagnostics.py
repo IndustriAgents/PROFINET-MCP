@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from profinet_mcp import __version__, validation
+from profinet_mcp.domain.capabilities import capabilities
 from profinet_mcp.domain.errors import OperationRefused, config_cmds_refusal
 from profinet_mcp.domain.model import DeviceMac, DeviceRef, Envelope, IdentifySeconds
 
@@ -28,7 +29,7 @@ class DiagnosticsOperations:
             meta,
         )
 
-    async def identify_device(self, device_mac: DeviceMac, duration_s: IdentifySeconds = 5) -> Envelope:
+    async def identify_device(self, device_mac: DeviceMac, duration_s: IdentifySeconds = 3) -> Envelope:
         """Make a device flash its identification LED (DCP Set Signal) so it can be found in the cabinet."""
         if refusal := config_cmds_refusal(self.config):
             raise OperationRefused(refusal)
@@ -49,6 +50,11 @@ class DiagnosticsOperations:
                 "config_cmds_enabled": self.config.config_cmds_enabled,
                 "device_aliases": self.resources.device_map.count(),
                 "device_map_error": self.resources.device_map.error,
+                "capabilities": capabilities(
+                    self.client.backend_name,
+                    writes_enabled=self.config.writes_enabled,
+                    extra_gate=self.config.config_cmds_enabled,
+                ),
             },
             self.backend_meta(contacted=False),
         )

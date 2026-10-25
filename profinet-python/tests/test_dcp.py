@@ -229,7 +229,10 @@ class FakeSniffer:
     def stop(self):
         self.running = False
         lfilter = self.kwargs["lfilter"]
-        return [FakePacket(data) for data in self.captured if lfilter(FakePacket(data))]
+        packets = [FakePacket(data) for data in self.captured if lfilter(FakePacket(data))]
+        for packet in packets:
+            self.kwargs["prn"](packet)
+        return packets if self.kwargs["store"] else []
 
 
 class FakeScapy:
@@ -315,3 +318,27 @@ def test_scapy_api_names_exist() -> None:
     """The real transport imports these lazily; make sure they exist in the locked Scapy (import only)."""
     api = dcp._load_scapy()
     assert callable(api.AsyncSniffer) and callable(api.sendp) and callable(api.get_if_hwaddr)
+
+
+def test_capture_limits_are_visible_in_discovery(monkeypatch):
+    monkeypatch.setattr(dcp, "MAX_CAPTURE_FRAMES", 2)
+
+    class Sniffer(FakeSniffer):
+        captured = [identify_response()] * 5
+
+    transport = dcp.ScapyL2Transport("fake0", scapy=FakeScapy(sniffer_cls=Sniffer))
+    devices, info = dcp.identify_all(transport, timeout=0, xid=XID)
+    assert len(devices) == 1
+    assert info["frames_received"] == 2
+    assert info["capture_truncated"] is True and info["complete"] is False
+
+
+def test_capture_byte_limit_is_independent_of_count(monkeypatch):
+    monkeypatch.setattr(dcp, "MAX_CAPTURE_BYTES", len(identify_response()) - 1)
+
+    class Sniffer(FakeSniffer):
+        captured = [identify_response()]
+
+    transport = dcp.ScapyL2Transport("fake0", scapy=FakeScapy(sniffer_cls=Sniffer))
+    devices, info = dcp.identify_all(transport, timeout=0, xid=XID)
+    assert devices == [] and info["capture_truncated"] is True

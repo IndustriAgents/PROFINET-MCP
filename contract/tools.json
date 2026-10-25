@@ -148,7 +148,58 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "device_name": {
+                    "type": "string"
+                  },
+                  "slot": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "subslot": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "data_length": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "raw_data_hex": {
+                    "type": "string",
+                    "pattern": "^(?:[0-9a-fA-F]{2})*$",
+                    "description": "Raw bytes encoded as hexadecimal octets."
+                  },
+                  "bytes": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 255
+                    }
+                  },
+                  "alias": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "device_name",
+                  "slot",
+                  "subslot",
+                  "data_length",
+                  "raw_data_hex",
+                  "bytes"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -156,7 +207,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -330,7 +425,43 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "device_name": {
+                    "type": "string"
+                  },
+                  "slot": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "subslot": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "written_bytes": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "alias": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "device_name",
+                  "slot",
+                  "subslot",
+                  "written_bytes"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -338,7 +469,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -381,7 +556,100 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "devices": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "device_name": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "mac_address": {
+                          "type": "string"
+                        },
+                        "ip_address": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "subnet_mask": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "gateway": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "vendor_id": {
+                          "type": [
+                            "null",
+                            "boolean",
+                            "number",
+                            "string",
+                            "array",
+                            "object"
+                          ],
+                          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                        },
+                        "device_id": {
+                          "type": [
+                            "null",
+                            "boolean",
+                            "number",
+                            "string",
+                            "array",
+                            "object"
+                          ],
+                          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                        },
+                        "device_role": {
+                          "type": [
+                            "null",
+                            "boolean",
+                            "number",
+                            "string",
+                            "array",
+                            "object"
+                          ],
+                          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                        }
+                      },
+                      "additionalProperties": true,
+                      "required": [
+                        "mac_address"
+                      ],
+                      "description": "Device identity returned by DCP discovery or the configured mock backend. Optional attributes are absent when not reported."
+                    }
+                  },
+                  "count": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "devices",
+                  "count"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -389,7 +657,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -431,7 +743,83 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "device_name": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "mac_address": {
+                    "type": "string"
+                  },
+                  "ip_address": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "subnet_mask": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "gateway": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "vendor_id": {
+                    "type": [
+                      "null",
+                      "boolean",
+                      "number",
+                      "string",
+                      "array",
+                      "object"
+                    ],
+                    "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                  },
+                  "device_id": {
+                    "type": [
+                      "null",
+                      "boolean",
+                      "number",
+                      "string",
+                      "array",
+                      "object"
+                    ],
+                    "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                  },
+                  "device_role": {
+                    "type": [
+                      "null",
+                      "boolean",
+                      "number",
+                      "string",
+                      "array",
+                      "object"
+                    ],
+                    "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "mac_address"
+                ],
+                "description": "Device identity returned by DCP discovery or the configured mock backend. Optional attributes are absent when not reported."
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -439,7 +827,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -451,7 +883,7 @@
     },
     {
       "name": "identify_device",
-      "description": "Make a device flash its identification LED (DCP Set Signal) so it can be found in the cabinet.\n\n        A DCP configuration command: refused unless both PROFINET_WRITES_ENABLED=true and\n        PROFINET_CONFIG_CMDS_ENABLED=true, like set_device_name. Supported by the mock backend. The\n        network backend does not implement DCP Set and returns success=false without sending anything.\n        ",
+      "description": "Request one DCP identification flash sequence. Live backend accepts duration_s=3 only; the device controls actual LED timing. Mock supports other durations. Requires both PROFINET_WRITES_ENABLED and PROFINET_CONFIG_CMDS_ENABLED. Acknowledgement is not verification of the physical LED.",
       "inputSchema": {
         "properties": {
           "device_mac": {
@@ -462,7 +894,7 @@
             "type": "string"
           },
           "duration_s": {
-            "default": 5,
+            "default": 3,
             "description": "How long the device should flash, in seconds",
             "maximum": 600,
             "minimum": 1,
@@ -489,7 +921,33 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "mac_address": {
+                    "type": "string"
+                  },
+                  "identify_duration_s": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "duration_verified": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "mac_address"
+                ],
+                "description": "Protocol acknowledgement of identification; physical LED behavior is not independently verified."
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -497,7 +955,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -511,7 +1013,7 @@
     },
     {
       "name": "set_device_name",
-      "description": "Assign a new station name (DCP Set NameOfStation) to the device with this MAC address.\n\n        Refused unless both PROFINET_WRITES_ENABLED=true and PROFINET_CONFIG_CMDS_ENABLED=true:\n        renaming a device in a running plant takes it away from the IO controller that expects it.\n        The name must follow the PROFINET rules (lowercase a-z, 0-9, '-', dot-separated labels of\n        1-63 characters, at most 240 in total). Supported by the mock backend; the network backend\n        returns success=false without sending anything.\n        ",
+      "description": "Assign a permanent station name to an explicit unicast device MAC using DCP Set. Requires both PROFINET_WRITES_ENABLED and PROFINET_CONFIG_CMDS_ENABLED. Supported on network and mock backends. Protocol acknowledgement does not verify physical completion; an unknown outcome must not be automatically retried.",
       "inputSchema": {
         "properties": {
           "device_mac": {
@@ -549,7 +1051,32 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "mac_address": {
+                    "type": "string"
+                  },
+                  "device_name": {
+                    "type": "string"
+                  },
+                  "permanent": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "mac_address",
+                  "device_name"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -557,7 +1084,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -571,7 +1142,7 @@
     },
     {
       "name": "set_device_ip",
-      "description": "Assign IP address, subnet mask and gateway (DCP Set IP) to the device with this MAC address.\n\n        Refused unless both PROFINET_WRITES_ENABLED=true and PROFINET_CONFIG_CMDS_ENABLED=true. The\n        gateway, if given, must be inside the subnet. Supported by the mock backend; the network\n        backend returns success=false without sending anything.\n        ",
+      "description": "Assign permanent IPv4 address, mask and gateway to an explicit unicast device MAC using DCP Set. Requires both PROFINET_WRITES_ENABLED and PROFINET_CONFIG_CMDS_ENABLED. Supported on network and mock backends. Protocol acknowledgement does not verify physical completion; an unknown outcome must not be automatically retried.",
       "inputSchema": {
         "properties": {
           "device_mac": {
@@ -630,7 +1201,40 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "mac_address": {
+                    "type": "string"
+                  },
+                  "ip_address": {
+                    "type": "string"
+                  },
+                  "subnet_mask": {
+                    "type": "string"
+                  },
+                  "gateway": {
+                    "type": "string"
+                  },
+                  "permanent": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "mac_address",
+                  "ip_address",
+                  "subnet_mask",
+                  "gateway"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -638,7 +1242,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -671,7 +1319,48 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "devices": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": [
+                          "null",
+                          "boolean",
+                          "number",
+                          "string",
+                          "array",
+                          "object"
+                        ],
+                        "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                      },
+                      "description": "Protocol or configured-map record; additional vendor-defined fields are preserved."
+                    }
+                  },
+                  "count": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "warning": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "devices",
+                  "count"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -679,7 +1368,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -721,7 +1454,103 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "filepath": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": [
+                        "null",
+                        "boolean",
+                        "number",
+                        "string",
+                        "array",
+                        "object"
+                      ],
+                      "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                    },
+                    "description": "Protocol or configured-map record; additional vendor-defined fields are preserved."
+                  },
+                  "device_access_points": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": [
+                          "null",
+                          "boolean",
+                          "number",
+                          "string",
+                          "array",
+                          "object"
+                        ],
+                        "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                      },
+                      "description": "Protocol or configured-map record; additional vendor-defined fields are preserved."
+                    }
+                  },
+                  "modules": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": [
+                          "null",
+                          "boolean",
+                          "number",
+                          "string",
+                          "array",
+                          "object"
+                        ],
+                        "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                      },
+                      "description": "Protocol or configured-map record; additional vendor-defined fields are preserved."
+                    }
+                  },
+                  "module_count": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "submodules": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": [
+                          "null",
+                          "boolean",
+                          "number",
+                          "string",
+                          "array",
+                          "object"
+                        ],
+                        "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+                      },
+                      "description": "Protocol or configured-map record; additional vendor-defined fields are preserved."
+                    }
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "filepath",
+                  "metadata",
+                  "device_access_points",
+                  "modules",
+                  "module_count",
+                  "submodules"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -729,7 +1558,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -741,7 +1614,7 @@
     },
     {
       "name": "ping",
-      "description": "Server health and settings: version, backend, connection settings and safety switches.\n\n        Does not contact any device; use get_connection_status to check the backend.\n        ",
+      "description": "Server health and settings: version, backend, connection settings and safety switches.\n\n        Does not contact any device; use get_connection_status to check the backend.\n         Reports static backend capabilities and native configuration gates; does not establish device reachability or permission.",
       "inputSchema": {
         "properties": {},
         "title": "pingArguments",
@@ -760,7 +1633,286 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "capabilities"
+                ],
+                "properties": {
+                  "capabilities": {
+                    "type": "object",
+                    "required": [
+                      "protocol",
+                      "backend",
+                      "simulated",
+                      "scope",
+                      "device_verified",
+                      "operations",
+                      "prerequisites"
+                    ],
+                    "properties": {
+                      "protocol": {
+                        "const": "profinet"
+                      },
+                      "backend": {
+                        "type": "string"
+                      },
+                      "simulated": {
+                        "type": "boolean"
+                      },
+                      "scope": {
+                        "const": "backend_support"
+                      },
+                      "device_verified": {
+                        "const": false
+                      },
+                      "operations": {
+                        "type": "object",
+                        "required": [
+                          "read_io_data",
+                          "write_io_data",
+                          "discover_devices",
+                          "get_device_info",
+                          "identify_device",
+                          "set_device_name",
+                          "set_device_ip",
+                          "list_devices",
+                          "load_gsd_file",
+                          "ping",
+                          "get_connection_status"
+                        ],
+                        "properties": {
+                          "read_io_data": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "write_io_data": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "discover_devices": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "get_device_info": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "identify_device": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "set_device_name": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "set_device_ip": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "list_devices": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "load_gsd_file": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "ping": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          "get_connection_status": {
+                            "type": "object",
+                            "required": [
+                              "supported",
+                              "enabled"
+                            ],
+                            "properties": {
+                              "supported": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "prerequisites": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": true
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -768,7 +1920,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -799,7 +1995,51 @@
           "success": {
             "type": "boolean"
           },
-          "data": {},
+          "data": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "backend": {
+                    "type": "string"
+                  },
+                  "reachable": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "detail": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "interface": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "endpoint": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "additionalProperties": true,
+                "required": [
+                  "backend",
+                  "reachable",
+                  "detail"
+                ]
+              }
+            ]
+          },
           "error": {
             "type": [
               "string",
@@ -807,7 +2047,51 @@
             ]
           },
           "meta": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string"
+              },
+              "code": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "description": "Native operation outcome. unknown means the action may have applied and must not be automatically replayed."
+              },
+              "request_sent": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "False proves no dispatch; null means the boundary has no dispatch evidence."
+              },
+              "duration_ms": {
+                "type": "number"
+              },
+              "attempts": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "complete": {
+                "type": "boolean"
+              },
+              "pages": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "audit_error": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              },
+              "simulated": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": true,
+            "description": "Protocol-specific diagnostics and completeness. Absence of a field does not establish success, freshness or physical completion."
           }
         },
         "additionalProperties": false
@@ -825,7 +2109,8 @@
         "address": "read_io_data",
         "alias": "read_device_by_alias"
       },
-      "legacyHandler": "read_io_data"
+      "legacyHandler": "read_io_data",
+      "resultShape": "read_io_data"
     },
     "write_io_data": {
       "selector": "target",
@@ -833,34 +2118,44 @@
         "address": "write_io_data",
         "alias": "write_device_by_alias"
       },
-      "legacyHandler": "write_io_data"
+      "legacyHandler": "write_io_data",
+      "resultShape": "write_io_data"
     },
     "discover_devices": {
-      "handler": "discover_devices"
+      "handler": "discover_devices",
+      "resultShape": "discover_devices"
     },
     "get_device_info": {
-      "handler": "get_device_info"
+      "handler": "get_device_info",
+      "resultShape": "get_device_info"
     },
     "identify_device": {
-      "handler": "identify_device"
+      "handler": "identify_device",
+      "resultShape": "identify_device"
     },
     "set_device_name": {
-      "handler": "set_device_name"
+      "handler": "set_device_name",
+      "resultShape": "set_device_name"
     },
     "set_device_ip": {
-      "handler": "set_device_ip"
+      "handler": "set_device_ip",
+      "resultShape": "set_device_ip"
     },
     "list_devices": {
-      "handler": "list_devices"
+      "handler": "list_devices",
+      "resultShape": "list_devices"
     },
     "load_gsd_file": {
-      "handler": "load_gsd_file"
+      "handler": "load_gsd_file",
+      "resultShape": "load_gsd_file"
     },
     "ping": {
-      "handler": "ping"
+      "handler": "ping",
+      "resultShape": "ping"
     },
     "get_connection_status": {
-      "handler": "get_connection_status"
+      "handler": "get_connection_status",
+      "resultShape": "get_connection_status"
     }
   },
   "legacy": {
@@ -1234,5 +2529,741 @@
     "maxNestingDepth": 32,
     "maxContainerItems": 10000,
     "maxTotalValues": 50000
+  },
+  "resultShapes": {
+    "read_io_data": {
+      "type": "object",
+      "properties": {
+        "device_name": {
+          "type": "string"
+        },
+        "slot": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "subslot": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "data_length": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "raw_data_hex": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-fA-F]{2})*$",
+          "description": "Raw bytes encoded as hexadecimal octets."
+        },
+        "bytes": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 255
+          }
+        },
+        "alias": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "device_name",
+        "slot",
+        "subslot",
+        "data_length",
+        "raw_data_hex",
+        "bytes"
+      ]
+    },
+    "write_io_data": {
+      "type": "object",
+      "properties": {
+        "device_name": {
+          "type": "string"
+        },
+        "slot": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "subslot": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "written_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "alias": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "device_name",
+        "slot",
+        "subslot",
+        "written_bytes"
+      ]
+    },
+    "discover_devices": {
+      "type": "object",
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "device_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "mac_address": {
+                "type": "string"
+              },
+              "ip_address": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "subnet_mask": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "gateway": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "vendor_id": {
+                "type": [
+                  "null",
+                  "boolean",
+                  "number",
+                  "string",
+                  "array",
+                  "object"
+                ],
+                "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+              },
+              "device_id": {
+                "type": [
+                  "null",
+                  "boolean",
+                  "number",
+                  "string",
+                  "array",
+                  "object"
+                ],
+                "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+              },
+              "device_role": {
+                "type": [
+                  "null",
+                  "boolean",
+                  "number",
+                  "string",
+                  "array",
+                  "object"
+                ],
+                "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+              }
+            },
+            "additionalProperties": true,
+            "required": [
+              "mac_address"
+            ],
+            "description": "Device identity returned by DCP discovery or the configured mock backend. Optional attributes are absent when not reported."
+          }
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "devices",
+        "count"
+      ]
+    },
+    "get_device_info": {
+      "type": "object",
+      "properties": {
+        "device_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mac_address": {
+          "type": "string"
+        },
+        "ip_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subnet_mask": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gateway": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vendor_id": {
+          "type": [
+            "null",
+            "boolean",
+            "number",
+            "string",
+            "array",
+            "object"
+          ],
+          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+        },
+        "device_id": {
+          "type": [
+            "null",
+            "boolean",
+            "number",
+            "string",
+            "array",
+            "object"
+          ],
+          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+        },
+        "device_role": {
+          "type": [
+            "null",
+            "boolean",
+            "number",
+            "string",
+            "array",
+            "object"
+          ],
+          "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "mac_address"
+      ],
+      "description": "Device identity returned by DCP discovery or the configured mock backend. Optional attributes are absent when not reported."
+    },
+    "identify_device": {
+      "type": "object",
+      "properties": {
+        "mac_address": {
+          "type": "string"
+        },
+        "identify_duration_s": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duration_verified": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "mac_address"
+      ],
+      "description": "Protocol acknowledgement of identification; physical LED behavior is not independently verified."
+    },
+    "set_device_name": {
+      "type": "object",
+      "properties": {
+        "mac_address": {
+          "type": "string"
+        },
+        "device_name": {
+          "type": "string"
+        },
+        "permanent": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "mac_address",
+        "device_name"
+      ]
+    },
+    "set_device_ip": {
+      "type": "object",
+      "properties": {
+        "mac_address": {
+          "type": "string"
+        },
+        "ip_address": {
+          "type": "string"
+        },
+        "subnet_mask": {
+          "type": "string"
+        },
+        "gateway": {
+          "type": "string"
+        },
+        "permanent": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "mac_address",
+        "ip_address",
+        "subnet_mask",
+        "gateway"
+      ]
+    },
+    "list_devices": {
+      "type": "object",
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "null",
+                "boolean",
+                "number",
+                "string",
+                "array",
+                "object"
+              ],
+              "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+            },
+            "description": "Protocol or configured-map record; additional vendor-defined fields are preserved."
+          }
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warning": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "devices",
+        "count"
+      ]
+    },
+    "load_gsd_file": {
+      "type": "object",
+      "properties": {
+        "filepath": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "null",
+              "boolean",
+              "number",
+              "string",
+              "array",
+              "object"
+            ],
+            "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+          },
+          "description": "Protocol or configured-map record; additional vendor-defined fields are preserved."
+        },
+        "device_access_points": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "null",
+                "boolean",
+                "number",
+                "string",
+                "array",
+                "object"
+              ],
+              "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+            },
+            "description": "Protocol or configured-map record; additional vendor-defined fields are preserved."
+          }
+        },
+        "modules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "null",
+                "boolean",
+                "number",
+                "string",
+                "array",
+                "object"
+              ],
+              "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+            },
+            "description": "Protocol or configured-map record; additional vendor-defined fields are preserved."
+          }
+        },
+        "module_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "submodules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "null",
+                "boolean",
+                "number",
+                "string",
+                "array",
+                "object"
+              ],
+              "description": "Protocol-typed JSON value; its datatype and encoding are described by the operation metadata."
+            },
+            "description": "Protocol or configured-map record; additional vendor-defined fields are preserved."
+          }
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "filepath",
+        "metadata",
+        "device_access_points",
+        "modules",
+        "module_count",
+        "submodules"
+      ]
+    },
+    "get_connection_status": {
+      "type": "object",
+      "properties": {
+        "backend": {
+          "type": "string"
+        },
+        "reachable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "detail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interface": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endpoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "backend",
+        "reachable",
+        "detail"
+      ]
+    },
+    "ping": {
+      "type": "object",
+      "required": [
+        "capabilities"
+      ],
+      "properties": {
+        "capabilities": {
+          "type": "object",
+          "required": [
+            "protocol",
+            "backend",
+            "simulated",
+            "scope",
+            "device_verified",
+            "operations",
+            "prerequisites"
+          ],
+          "properties": {
+            "protocol": {
+              "const": "profinet"
+            },
+            "backend": {
+              "type": "string"
+            },
+            "simulated": {
+              "type": "boolean"
+            },
+            "scope": {
+              "const": "backend_support"
+            },
+            "device_verified": {
+              "const": false
+            },
+            "operations": {
+              "type": "object",
+              "required": [
+                "read_io_data",
+                "write_io_data",
+                "discover_devices",
+                "get_device_info",
+                "identify_device",
+                "set_device_name",
+                "set_device_ip",
+                "list_devices",
+                "load_gsd_file",
+                "ping",
+                "get_connection_status"
+              ],
+              "properties": {
+                "read_io_data": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "write_io_data": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "discover_devices": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "get_device_info": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "identify_device": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "set_device_name": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "set_device_ip": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "list_devices": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "load_gsd_file": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "ping": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "get_connection_status": {
+                  "type": "object",
+                  "required": [
+                    "supported",
+                    "enabled"
+                  ],
+                  "properties": {
+                    "supported": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            },
+            "prerequisites": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": true
+    }
   }
 }

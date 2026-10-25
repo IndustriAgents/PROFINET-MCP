@@ -4,8 +4,8 @@
 
 * ``none`` (default) - nothing is contacted; device tools say how to choose a backend.
 * ``mock`` - JSON-lines over TCP to ``profinet-mock-server`` (every tool works).
-* ``network`` - the real PROFINET network on ``PROFINET_INTERFACE``. Only DCP
-  Identify (discovery) is implemented; I/O and DCP Set return "not implemented".
+* ``network`` - the real PROFINET network on ``PROFINET_INTERFACE``. DCP Identify
+  and gated unicast Set are implemented; cyclic I/O requires an external controller stack.
 
 Every backend answers with ``(result, meta)``; ``meta["backend"]`` names it.
 """
@@ -13,7 +13,9 @@ Every backend answers with ``(result, meta)``; ``meta["backend"]`` names it.
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
+import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -23,7 +25,8 @@ from typing import Any, Protocol
 import anyio
 from anyio.streams.buffered import BufferedByteReceiveStream
 
-from . import dcp
+from . import dcp, dcp_set, validation
+from .adapters.dcp_runtime import run_native
 from .config import BACKEND_MOCK, BACKEND_NETWORK, BACKEND_NONE, ProfinetConfig
 from .domain.errors import OperationRefused as OperationRefused
 from .domain.errors import ProfinetClientError as ProfinetClientError
@@ -156,6 +159,10 @@ class OutcomeUnknown(ProfinetClientError):
     Such requests are never re-sent automatically, so a change cannot reach the device twice.
     """
 
+    def __init__(self, message: str, *, request_sent: bool | None = True) -> None:
+        super().__init__(message)
+        self.request_sent = request_sent
+
 
 Meta = dict[str, Any]
 
@@ -196,7 +203,7 @@ def create_backend(config: ProfinetConfig) -> Backend:
             backoff_base=config.retry_backoff_base,
         )
     if config.backend == BACKEND_NETWORK:
-        return NetworkBackend(interface=config.interface)
+        return NetworkBackend(interface=config.interface, set_timeout=config.timeout)
     return UnconfiguredBackend()
 
 
@@ -509,7 +516,7 @@ class MockBackend:
 
 
 # ---------------------------------------------------------------------------
-# network: the real PROFINET network (DCP Identify only)
+# network: DCP discovery and explicit unicast configuration
 # ---------------------------------------------------------------------------
 
 IO_NOT_IMPLEMENTED = (
@@ -517,20 +524,13 @@ IO_NOT_IMPLEMENTED = (
     "relationship (AR) owned by an IO controller, and this server has no IO-controller stack. Nothing was "
     "sent. Use PROFINET_BACKEND=mock to exercise this tool against profinet-mock-server."
 )
-DCP_SET_NOT_IMPLEMENTED = (
-    "Not implemented on the network backend: DCP Set ({what}) has not been implemented or verified against "
-    "real devices, so nothing was sent. Use a PROFINET engineering tool for commissioning, or "
-    "PROFINET_BACKEND=mock to exercise this tool."
-)
-
-
 #: Minimum time between two DCP Identify All multicasts, so a model calling discovery in a loop cannot
 #: flood the PROFINET network (every device answers every request).
 MIN_IDENTIFY_INTERVAL_S = 2.0
 
 
 class NetworkBackend:
-    """Real network. Discovery uses DCP Identify All; everything else is refused honestly."""
+    """DCP discovery and gated unicast configuration; no cyclic IO-controller stack."""
 
     name = BACKEND_NETWORK
 
@@ -542,11 +542,15 @@ class NetworkBackend:
         min_interval: float = MIN_IDENTIFY_INTERVAL_S,
         clock: Callable[[], float] = time.monotonic,
         slack: float = 5.0,
+        set_timeout: float = 5.0,
     ) -> None:
         self.interface = interface
         self.transport = transport if transport is not None else dcp.ScapyL2Transport(interface)
         self.min_interval = min_interval
         self.slack = slack
+        self.set_timeout = set_timeout
+        self._native_lock = threading.Lock()
+        self._generation = 0
         self._clock = clock
         self._last_identify: float | None = None
         # (send time, completion time, devices, info) of the last finished Identify All
@@ -558,7 +562,7 @@ class NetworkBackend:
         self.closing = True
 
     def deadline(self, timeout: float | None = None) -> float:
-        return (timeout or 0.0) + dcp.SNIFFER_START_TIMEOUT + self.slack
+        return (timeout if timeout is not None else self.set_timeout) + dcp.SNIFFER_START_TIMEOUT + self.slack
 
     def describe(self) -> dict[str, Any]:
         return {"backend": self.name, "interface": self.interface}
@@ -570,6 +574,8 @@ class NetworkBackend:
         """DCP Identify All. ``allow_cached`` (device lookups) may reuse the last answer within the interval."""
         if self.closing:
             raise ClientDisconnected("The MCP client has disconnected; no DCP request was sent.")
+        if self._native_lock.locked():
+            raise RateLimited("A previous DCP exchange is still running; nothing was sent", self.min_interval)
         now = self._clock()
         previous = self._last_identify
         if previous is not None and now - previous < self.min_interval:
@@ -587,10 +593,16 @@ class NetworkBackend:
             )
         # Claimed before the (threaded) exchange, so concurrent calls are refused too.
         self._last_identify = now
+        self._generation += 1
+        generation = self._generation
         try:
             # abandon_on_cancel: the client's overall deadline can end the call even if capture hangs.
-            devices, info = await anyio.to_thread.run_sync(
-                dcp.identify_all, self.transport, timeout, abandon_on_cancel=True
+            devices, info = await run_native(
+                lambda transport: dcp.identify_all(transport, timeout),
+                self.transport,
+                self._native_lock,
+                call_not_after(self.deadline(timeout)),
+                lambda: self.closing or call_cancelled(),
             )
         except dcp.DcpError as exc:
             if exc.request_sent is False:
@@ -599,7 +611,8 @@ class NetworkBackend:
             # its rate-limit reservation unless nothing was provably sent.
             raise ProfinetClientError(str(exc)) from exc
         info = {**info, "timeout_s": timeout}
-        self._last_result = (now, self._clock(), copy.deepcopy(devices), info)
+        if self._generation == generation and not self.closing:
+            self._last_result = (now, self._clock(), copy.deepcopy(devices), info)
         return devices, {**self._meta(), **info, "cached": False}
 
     async def read_io(self, device: str, slot: int, subslot: int, length: int) -> tuple[bytes, Meta]:
@@ -609,13 +622,61 @@ class NetworkBackend:
         raise OperationNotImplemented(IO_NOT_IMPLEMENTED)
 
     async def identify(self, mac: str, duration_s: int) -> tuple[dict[str, Any], Meta]:
-        raise OperationNotImplemented(DCP_SET_NOT_IMPLEMENTED.format(what="identification signal"))
+        if duration_s != 3:
+            raise OperationRefused(
+                "Live DCP Signal uses one fixed flash sequence; duration_s must be 3. Nothing was sent."
+            )
+        meta = await self._set(mac, 5, 3, bytes.fromhex("0100"), qualifier=0)
+        return {"mac_address": mac, "identify_duration_s": 3, "duration_verified": False}, meta
 
     async def set_name(self, mac: str, name: str) -> tuple[dict[str, Any], Meta]:
-        raise OperationNotImplemented(DCP_SET_NOT_IMPLEMENTED.format(what="name of station"))
+        name = validation.station_name(name)
+        meta = await self._set(mac, 2, 2, name.encode("ascii"))
+        return {"mac_address": mac, "device_name": name, "permanent": True}, meta
 
     async def set_ip(self, mac: str, ip: str, subnet: str, gateway: str) -> tuple[dict[str, Any], Meta]:
-        raise OperationNotImplemented(DCP_SET_NOT_IMPLEMENTED.format(what="IP parameters"))
+        ip, subnet, gateway = validation.ip_settings(ip, subnet, gateway)
+        payload = b"".join(ipaddress.IPv4Address(value).packed for value in (ip, subnet, gateway))
+        meta = await self._set(mac, 1, 2, payload)
+        return {
+            "mac_address": mac,
+            "ip_address": ip,
+            "subnet_mask": subnet,
+            "gateway": gateway,
+            "permanent": True,
+        }, meta
+
+    async def _set(self, mac: str, option: int, suboption: int, value: bytes, *, qualifier: int = 1) -> Meta:
+        mac = validation.mac_address(mac)
+        try:
+            dcp_set.unicast_mac(mac)
+        except ValueError as exc:
+            raise OperationRefused(str(exc)) from exc
+        if self.closing or call_cancelled():
+            raise ClientCancelled("The DCP request was cancelled before dispatch; nothing was sent")
+        # A set may apply even if its reply is lost. Never reuse earlier discovery metadata.
+        self._generation += 1
+        self._last_result = None
+        try:
+            meta = await run_native(
+                lambda transport: dcp_set.set_value(
+                    transport, self.set_timeout, mac, option, suboption, value, qualifier=qualifier
+                ),
+                self.transport,
+                self._native_lock,
+                call_not_after(self.deadline()),
+                lambda: self.closing or call_cancelled(),
+            )
+        except dcp_set.SetRejected as exc:
+            raise DeviceRejected(str(exc)) from exc
+        except dcp.DcpError as exc:
+            if exc.request_sent is False:
+                raise RequestNotSent(str(exc)) from exc
+            raise OutcomeUnknown(
+                f"{exc}. The configuration may have been applied; it was not sent again.",
+                request_sent=exc.request_sent,
+            ) from exc
+        return {**self._meta(), **meta}
 
     async def probe(self) -> dict[str, Any]:
         return {

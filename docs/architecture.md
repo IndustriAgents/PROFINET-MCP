@@ -148,7 +148,7 @@ A FIFO cannot block policy loading or audit admission while waiting for a peer.
 
 ## Protocol capability limits
 
-Live network support is DCP discovery. Cyclic I/O, identification and device configuration currently require the mock backend; unsupported live operations fail explicitly. GSD parsing is metadata work, not proof that a device is reachable.
+Live network support includes DCP discovery and explicitly gated unicast DCP Set name, IP and Signal. Cyclic I/O still requires an external IO-controller stack and fails explicitly on the network backend. Native attempts retain the interface lease after cancellation until their worker exits; a late queued worker cannot dispatch. Discovery cache entries are invalidated before configuration attempts. GSD parsing is metadata work, not proof that a device is reachable.
 
 ## Packages
 
@@ -191,3 +191,20 @@ immediately because no exchange was started.
 Invalid or missing deployment policy files are startup configuration errors:
 the CLI exits with status 2, emits a diagnostic on stderr, and leaves stdout
 free for MCP transport.
+
+## Backend capability inspection
+
+`ping.data.capabilities` is a local, schema-described inventory of canonical
+operations. It reports `scope: "backend_support"` and `device_verified: false`.
+An operation's `supported` field describes the configured backend implementation;
+`enabled` describes native configuration gates only. Neither field grants MCP
+policy authorization or verifies a device's current state or reachability.
+See [protocol research and capability matrix](protocol-research.md) for sources,
+implementation evidence, migration notes and outstanding hardware/driver limits.
+
+Every canonical operation now names an explicit `resultShapes` entry in
+`contract/tools.json`; its advertised `outputSchema.data` embeds that shape.
+After a deliberate contract edit run `python scripts/sync_contract.py` to refresh
+embedded schemas and the packaged copy, then `python scripts/verify_contract.py`
+to check parity. Tests validate real MCP result envelopes and matching text /
+structured content; the installed wheel/npm smoke runs the advertised contract.

@@ -384,9 +384,6 @@ async def test_network_backend_discovers_with_dcp(monkeypatch) -> None:
     [
         (lambda b: b.read_io("x", 1, 1, 4), "IO-controller stack"),
         (lambda b: b.write_io("x", 1, 1, b"\x01"), "IO-controller stack"),
-        (lambda b: b.identify(MAC, 5), "DCP Set (identification signal)"),
-        (lambda b: b.set_name(MAC, "new-name"), "DCP Set (name of station)"),
-        (lambda b: b.set_ip(MAC, "10.0.0.2", "255.0.0.0", "0.0.0.0"), "DCP Set (IP parameters)"),
     ],
 )
 async def test_network_backend_refuses_what_it_cannot_do(operation, fragment: str) -> None:
