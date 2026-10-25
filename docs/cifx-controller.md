@@ -105,7 +105,13 @@ waits for that firmware update; payload, quality and AR bits come from one
 snapshot. Identity/state is rechecked around the read. Bus-off, channel errors,
 new/restart-required configuration, nonexclusive channel access, mismatched
 sizes/modes, expired handshakes, inactive ARs, diagnosis/configuration differences,
-and bad/unknown IOPS/IOCS fail closed. No cached payload is returned on error.
+and bad/unknown IOPS/IOCS fail closed. This commissioned profile has one status
+byte per submodule: bit 0 indicating an extension, or nonzero reserved bits 1..4,
+is rejected even when bit 7 says GOOD. Bits 5..6 (instance) are preserved; their
+cause interpretation applies to BAD status. For reads, IOPS describes the remote
+provider's input data; before writes, received IOCS describes the remote consumer
+of the output data. Neither proves physical actuation. No cached payload is
+returned on error.
 
 Read metadata reports `quality`, `iops`, `ar`, `age_ms`, `complete`, and
 `freshness: "new_firmware_handshake"`. This establishes freshness relative to
